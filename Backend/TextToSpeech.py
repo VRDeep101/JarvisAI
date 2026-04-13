@@ -3,6 +3,8 @@ import random
 import soundfile as sf
 import os
 import re
+import threading
+import queue
 from kokoro_onnx import Kokoro
 from dotenv import dotenv_values
 
@@ -11,14 +13,11 @@ from dotenv import dotenv_values
 _config    = dotenv_values(".env")
 
 VOICE_ID   = "am_puck"
-SPEED      = 0.7
+SPEED      = 0.9
 LANGUAGE   = "en-us"
-AUDIO_PATH = r"Data\speech.wav"
+AUDIO_PATH = r"Data\speech_{}.wav"   # {} = slot index (double-buffered)
 
 _kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
-
-# ─── Pygame Mixer — once at startup ──────────────────────────────────────────
-# Init once here so first playback has zero delay — no word skipping
 
 pygame.mixer.pre_init(frequency=24000, size=-16, channels=1, buffer=512)
 pygame.mixer.init()
@@ -27,36 +26,17 @@ pygame.mixer.init()
 
 OVERFLOW_LINES = [
     "The rest of the answer is up on the screen for you — do have a look.",
-    "I've kept it brief here; the full response is waiting on the chat screen.",
-    "The remaining details are right there on the screen whenever you're ready.",
+    "The remaining details are right there on the screen sir,whenever you're ready.",
     "There's more to it — check the chat screen for the complete picture.",
-    "I'll stop here; the rest is displayed on the screen for your convenience.",
-    "The continuation is on the chat screen — it's all there for you.",
-    "Kindly glance at the screen — the full answer is printed there.",
-    "The chat screen has everything else you need. Do take a look.",
-    "I've only read part of it aloud — the rest is on the screen for you.",
-    "The complete response has been laid out on the chat screen.",
-    "You'll find the remaining text on the screen — it's all there.",
-    "The answer continues on the chat screen; please have a look when you can.",
-    "There's quite a bit more — it's all visible on the chat screen.",
-    "For the full breakdown, the chat screen has you covered.",
-    "I've summarised the start; do check the screen for the rest.",
-    "The remainder of the response is on display — the screen has it all.",
-    "The chat screen holds the rest of what you need to know.",
-    "Everything else is right there on the screen — please do check.",
-    "I kept the audio short on purpose; the full text is on the screen.",
-    "The screen has the complete answer ready for you. Kindly take a look.",
-    "More details are printed on the chat screen — have a glance at your leisure.",
-    "The tail end of the response is on the screen, all ready for you.",
-    "To get the full picture, the chat screen is your best bet right now.",
-    "I've only scratched the surface here — the rest lives on the chat screen.",
-    "The chat panel has the remaining information laid out clearly for you.",
-    "The longer portion is displayed on the screen — it's worth a read.",
-    "Hop over to the chat screen — the complete answer is printed there.",
-    "What follows is on the screen; I didn't want to read it all out.",
-    "The full reply is on the chat screen — nothing's been left out.",
-    "For everything else, the screen's got you. Do give it a look.",
+    
 ]
+
+# ─── Sentence Splitter ───────────────────────────────────────────────────────
+
+def _split_sentences(text: str) -> list[str]:
+    """Split on . ! ? — keep non-empty, stripped sentences."""
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [p.strip() for p in parts if p.strip()]
 
 # ─── Natural Text Preprocessor ───────────────────────────────────────────────
 
@@ -65,83 +45,89 @@ def _make_natural(text: str) -> str:
         r'\s+(and|but|so|because|however|though|although|which|who)\s+',
         r', \1 ', text, flags=re.IGNORECASE
     )
-    text = re.sub(
-        r'(\b(what|when|where|who|why|how|is|are|was|were|do|does|did|can|could|will|would)\b[^.?!]{5,})(?=\.\s)',
-        r'\1?', text, flags=re.IGNORECASE
-    )
     text = re.sub(r'[,]{2,}', ',', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ─── Core Audio Generation ────────────────────────────────────────────────────
-
-def _generate_audio(text: str) -> tuple:
-    """Convert text to audio samples via Kokoro."""
-    natural_text = _make_natural(text)
-    samples, sample_rate = _kokoro.create(
-        natural_text,
-        voice=VOICE_ID,
-        speed=SPEED,
-        lang=LANGUAGE
-    )
-    return samples, sample_rate
-
-# ─── Playback ────────────────────────────────────────────────────────────────
-
-def _play_audio(samples, sample_rate, callback=lambda r=None: True) -> bool:
-    """
-    Play audio — mixer already initialized at startup so zero delay.
-    """
-    try:
-        os.makedirs(os.path.dirname(AUDIO_PATH), exist_ok=True)
-        sf.write(AUDIO_PATH, samples, sample_rate)
-
-        pygame.mixer.music.load(AUDIO_PATH)
-        pygame.mixer.music.play()
-
-        while pygame.mixer.music.get_busy():
-            if not callback():
-                break
-            pygame.time.Clock().tick(10)
-
-        return True
-
-    except Exception as exc:
-        print(f"[TTS] Playback error: {exc}")
-        return False
-
-    finally:
-        try:
-            callback(False)
-            pygame.mixer.music.stop()
-        except Exception as exc:
-            print(f"[TTS] Cleanup error: {exc}")
-
-# ─── Public API ──────────────────────────────────────────────────────────────
+# ─── Streaming Speak ─────────────────────────────────────────────────────────
 
 def speak(text: str, callback=lambda r=None: True) -> bool:
-    """Generate audio from text and play it."""
-    try:
-        samples, sample_rate = _generate_audio(text)
-    except Exception as exc:
-        print(f"[TTS] Generation error: {exc}")
+    """
+    Pipeline approach:
+      - Producer thread: generates audio for each sentence → puts (samples, rate, slot) in queue
+      - Main thread: plays each chunk as soon as it's ready
+    First audio starts playing while sentence 2 is still being generated → near-zero wait.
+    """
+    sentences = _split_sentences(text)
+    if not sentences:
         return False
-    return _play_audio(samples, sample_rate, callback)
+
+    audio_q: queue.Queue = queue.Queue(maxsize=2)   # at most 2 chunks buffered
+    DONE = object()                                  # sentinel
+
+    os.makedirs(os.path.dirname(AUDIO_PATH.format(0)), exist_ok=True)
+
+    def producer():
+        for idx, sentence in enumerate(sentences):
+            try:
+                natural = _make_natural(sentence)
+                samples, sample_rate = _kokoro.create(
+                    natural, voice=VOICE_ID, speed=SPEED, lang=LANGUAGE
+                )
+                slot = idx % 2          # double-buffer: alternates between slot 0 and 1
+                path = AUDIO_PATH.format(slot)
+                sf.write(path, samples, sample_rate)
+                audio_q.put((path, sample_rate))
+            except Exception as exc:
+                print(f"[TTS] Generation error (sentence {idx}): {exc}")
+        audio_q.put(DONE)
+
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+
+    success = True
+    while True:
+        item = audio_q.get()
+        if item is DONE:
+            break
+        path, _ = item
+        try:
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                if not callback():
+                    pygame.mixer.music.stop()
+                    success = False
+                    break
+                pygame.time.Clock().tick(10)
+        except Exception as exc:
+            print(f"[TTS] Playback error: {exc}")
+            success = False
+
+        if not success:
+            break
+
+    try:
+        callback(False)
+        pygame.mixer.music.stop()
+    except Exception:
+        pass
+
+    t.join(timeout=2)
+    return success
 
 
 def say(text: str, callback=lambda r=None: True) -> None:
-    """
-    Smart speak — long text (>= 250 chars, > 4 sentences) gets truncated
-    to first 2 sentences + overflow message.
-    """
-    sentences = str(text).split(".")
+    """Smart speak — long text gets truncated to first 2 sentences + overflow."""
+    sentences = _split_sentences(str(text))
     is_long   = len(sentences) > 4 and len(text) >= 250
 
     if is_long:
-        short_version = ". ".join(sentences[:2]).strip() + ". " + random.choice(OVERFLOW_LINES)
-        speak(short_version, callback)
+        short = ". ".join(sentences[:2]) + ". " + random.choice(OVERFLOW_LINES)
+        speak(short, callback)
     else:
         speak(text, callback)
+
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
