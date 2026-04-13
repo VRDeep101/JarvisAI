@@ -5,6 +5,7 @@ from dotenv import dotenv_values
 from bs4 import BeautifulSoup
 from rich import print
 from groq import Groq
+from CodeWriter import WriteCode          # ← Claude API, code only
 import webbrowser
 import subprocess
 import requests
@@ -17,7 +18,7 @@ env_vars   = dotenv_values(".env")
 GroqAPIKey = env_vars.get("GroqAPIKey")
 Username   = env_vars.get("Username", "User")
 
-client = Groq(api_key=GroqAPIKey)
+client = Groq(api_key=GroqAPIKey)         # Groq — everything except code
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 USERAGENT = (
@@ -39,14 +40,14 @@ SYSTEM_PROMPT = [
     }
 ]
 
-messages = []  # Conversation history for ContentWriterAI
+messages = []
 
 # ── Google Search ──────────────────────────────────────────────────────────────
 def GoogleSearch(topic: str) -> bool:
     search(topic)
     return True
 
-# ── Content Writer ─────────────────────────────────────────────────────────────
+# ── Content Writer (Groq) ──────────────────────────────────────────────────────
 def Content(topic: str) -> bool:
     """Generate written content via Groq and open it in Notepad."""
 
@@ -80,7 +81,6 @@ def Content(topic: str) -> bool:
     content_text = write_with_ai(clean_topic)
 
     os.makedirs("Data", exist_ok=True)
-
     safe_name = clean_topic.lower().replace(" ", "_")
     filepath  = rf"Data\{safe_name}.txt"
 
@@ -108,13 +108,8 @@ def _extract_links(html: str) -> list:
     return [link.get("href") for link in links]
 
 def _open_in_chrome(query: str) -> bool:
-    """
-    Search Google for the query, grab the first result, and open it in Chrome.
-    Falls back to the Google search page if no result link is found.
-    Falls back to the default browser if Chrome is not installed.
-    """
-    # ── Step 1: Try to get first Google result URL ─────────────────────────
-    target_url = f"https://www.google.com/search?q={query}"  # safe default
+    """Search Google for query and open first result in Chrome."""
+    target_url = f"https://www.google.com/search?q={query}"
     try:
         response = _session.get(
             target_url,
@@ -126,38 +121,31 @@ def _open_in_chrome(query: str) -> bool:
             if links and links[0]:
                 target_url = links[0]
     except Exception:
-        pass  # Network error — just use the search URL
+        pass
 
-    # ── Step 2: Open in Chrome ─────────────────────────────────────────────
     chrome_paths = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ]
-
     for chrome_path in chrome_paths:
         if os.path.exists(chrome_path):
             subprocess.Popen([chrome_path, target_url])
             return True
 
-    # Chrome not found — fall back to default browser
     webbrowser.open(target_url)
     return True
 
-
 def OpenApp(app: str) -> bool:
     try:
-        # First try opening as a locally installed application
         appopen(app, match_closest=True, output=True, throw_error=True)
         return True
     except Exception:
-        # Not installed — search and open best result in Chrome
         print(f"[yellow]'{app}' not found locally. Searching and opening in Chrome...[/yellow]")
         return _open_in_chrome(app)
-OpenApp("facebook")
 
 def CloseApp(app: str) -> bool:
     if "chrome" in app.lower():
-        return False  # Chrome handled separately
+        return False
     try:
         close(app, match_closest=True, output=True, throw_error=True)
         return True
@@ -198,6 +186,16 @@ async def TranslateAndExecute(commands: list[str]):
         elif cmd.startswith("content"):
             funcs.append(asyncio.to_thread(Content, cmd.removeprefix("content").strip()))
 
+        # ── Code writing → Claude API (CodeWriter.py) ─────────────────────
+        elif cmd.startswith("writecode") or cmd.startswith("write code") or cmd.startswith("code"):
+            clean = (
+                cmd.removeprefix("writecode")
+                   .removeprefix("write code")
+                   .removeprefix("code")
+                   .strip()
+            )
+            funcs.append(asyncio.to_thread(WriteCode, clean))
+
         elif cmd.startswith("google search"):
             funcs.append(asyncio.to_thread(GoogleSearch, cmd.removeprefix("google search").strip()))
 
@@ -208,7 +206,7 @@ async def TranslateAndExecute(commands: list[str]):
             funcs.append(asyncio.to_thread(System, cmd.removeprefix("system").strip()))
 
         elif cmd.startswith("general") or cmd.startswith("realtime"):
-            pass  # Handled by other modules
+            pass
 
         else:
             print(f"[yellow]No handler found for:[/yellow] {cmd}")
