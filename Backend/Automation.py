@@ -26,7 +26,6 @@ USERAGENT = (
     "Chrome/100.0.4896.75 Safari/537.36"
 )
 
-# llama-3.3-70b-versatile replaces the decommissioned mixtral-8x7b-32768
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 SYSTEM_PROMPT = [
@@ -46,7 +45,7 @@ messages = []  # Conversation history for ContentWriterAI
 def GoogleSearch(topic: str) -> bool:
     search(topic)
     return True
-GoogleSearch("figma")
+
 # ── Content Writer ─────────────────────────────────────────────────────────────
 def Content(topic: str) -> bool:
     """Generate written content via Groq and open it in Notepad."""
@@ -57,7 +56,6 @@ def Content(topic: str) -> bool:
     def write_with_ai(prompt: str) -> str:
         messages.append({"role": "user", "content": prompt})
 
-        # Streaming response – faster time-to-first-token
         completion = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=SYSTEM_PROMPT + messages,
@@ -81,7 +79,6 @@ def Content(topic: str) -> bool:
     clean_topic  = topic.replace("Content", "").strip()
     content_text = write_with_ai(clean_topic)
 
-    # Make sure the Data directory exists
     os.makedirs("Data", exist_ok=True)
 
     safe_name = clean_topic.lower().replace(" ", "_")
@@ -103,35 +100,64 @@ def PlayYoutube(query: str) -> bool:
     return True
 
 # ── App Open / Close ───────────────────────────────────────────────────────────
-_session = requests.Session()  # Reuse session for speed
+_session = requests.Session()
 
 def _extract_links(html: str) -> list:
     soup  = BeautifulSoup(html, "html.parser")
     links = soup.find_all("a", {"jsname": "UWckNb"})
     return [link.get("href") for link in links]
 
-def _google_fallback_open(query: str) -> bool:
-    """Open the first Google search result for the given query."""
-    url      = f"https://www.google.com/search?q={query}"
-    response = _session.get(url, headers={"User-Agent": USERAGENT}, timeout=8)
-    if response.status_code == 200:
-        links = _extract_links(response.text)
-        if links:
-            webbrowser.open(links[0])
+def _open_in_chrome(query: str) -> bool:
+    """
+    Search Google for the query, grab the first result, and open it in Chrome.
+    Falls back to the Google search page if no result link is found.
+    Falls back to the default browser if Chrome is not installed.
+    """
+    # ── Step 1: Try to get first Google result URL ─────────────────────────
+    target_url = f"https://www.google.com/search?q={query}"  # safe default
+    try:
+        response = _session.get(
+            target_url,
+            headers={"User-Agent": USERAGENT},
+            timeout=8,
+        )
+        if response.status_code == 200:
+            links = _extract_links(response.text)
+            if links and links[0]:
+                target_url = links[0]
+    except Exception:
+        pass  # Network error — just use the search URL
+
+    # ── Step 2: Open in Chrome ─────────────────────────────────────────────
+    chrome_paths = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+
+    for chrome_path in chrome_paths:
+        if os.path.exists(chrome_path):
+            subprocess.Popen([chrome_path, target_url])
             return True
-    print("Failed to retrieve search results.")
-    return False
+
+    # Chrome not found — fall back to default browser
+    webbrowser.open(target_url)
+    return True
+
 
 def OpenApp(app: str) -> bool:
     try:
+        # First try opening as a locally installed application
         appopen(app, match_closest=True, output=True, throw_error=True)
         return True
     except Exception:
-        return _google_fallback_open(app)
+        # Not installed — search and open best result in Chrome
+        print(f"[yellow]'{app}' not found locally. Searching and opening in Chrome...[/yellow]")
+        return _open_in_chrome(app)
+OpenApp("facebook")
 
 def CloseApp(app: str) -> bool:
     if "chrome" in app.lower():
-        return False  # Skip Chrome – handled elsewhere
+        return False  # Chrome handled separately
     try:
         close(app, match_closest=True, output=True, throw_error=True)
         return True
