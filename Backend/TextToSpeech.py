@@ -13,7 +13,7 @@ from dotenv import dotenv_values
 _config    = dotenv_values(".env")
 
 VOICE_ID   = "am_puck"
-SPEED      = 0.9
+SPEED      = 0.8
 LANGUAGE   = "en-us"
 AUDIO_PATH = r"Data\speech_{}.wav"   # {} = slot index (double-buffered)
 

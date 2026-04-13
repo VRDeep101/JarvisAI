@@ -5,7 +5,6 @@ from dotenv import dotenv_values
 from bs4 import BeautifulSoup
 from rich import print
 from groq import Groq
-from CodeWriter import WriteCode          # ← Claude API, code only
 import webbrowser
 import subprocess
 import requests
@@ -13,12 +12,24 @@ import keyboard
 import asyncio
 import os
 
+# FIX: Safe import — CodeWriter.py optional hai, crash nahi hoga agar file nahi hai
+try:
+    from Backend.CodeWriter import WriteCode
+    CODE_WRITER_AVAILABLE = True
+except ImportError:
+    try:
+        from CodeWriter import WriteCode
+        CODE_WRITER_AVAILABLE = True
+    except ImportError:
+        CODE_WRITER_AVAILABLE = False
+        print("[yellow]⚠️ CodeWriter module not found — 'write code' command disabled.[/yellow]")
+
 # ── Environment & Client Setup ─────────────────────────────────────────────────
 env_vars   = dotenv_values(".env")
 GroqAPIKey = env_vars.get("GroqAPIKey")
 Username   = env_vars.get("Username", "User")
 
-client = Groq(api_key=GroqAPIKey)         # Groq — everything except code
+client = Groq(api_key=GroqAPIKey)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 USERAGENT = (
@@ -49,8 +60,6 @@ def GoogleSearch(topic: str) -> bool:
 
 # ── Content Writer (Groq) ──────────────────────────────────────────────────────
 def Content(topic: str) -> bool:
-    """Generate written content via Groq and open it in Notepad."""
-
     def open_notepad(filepath: str) -> None:
         subprocess.Popen(["notepad.exe", filepath])
 
@@ -82,7 +91,7 @@ def Content(topic: str) -> bool:
 
     os.makedirs("Data", exist_ok=True)
     safe_name = clean_topic.lower().replace(" ", "_")
-    filepath  = rf"Data\{safe_name}.txt"
+    filepath  = os.path.join("Data", f"{safe_name}.txt")
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content_text)
@@ -108,7 +117,6 @@ def _extract_links(html: str) -> list:
     return [link.get("href") for link in links]
 
 def _open_in_chrome(query: str) -> bool:
-    """Search Google for query and open first result in Chrome."""
     target_url = f"https://www.google.com/search?q={query}"
     try:
         response = _session.get(
@@ -186,15 +194,17 @@ async def TranslateAndExecute(commands: list[str]):
         elif cmd.startswith("content"):
             funcs.append(asyncio.to_thread(Content, cmd.removeprefix("content").strip()))
 
-        # ── Code writing → Claude API (CodeWriter.py) ─────────────────────
         elif cmd.startswith("writecode") or cmd.startswith("write code") or cmd.startswith("code"):
-            clean = (
-                cmd.removeprefix("writecode")
-                   .removeprefix("write code")
-                   .removeprefix("code")
-                   .strip()
-            )
-            funcs.append(asyncio.to_thread(WriteCode, clean))
+            if CODE_WRITER_AVAILABLE:
+                clean = (
+                    cmd.removeprefix("writecode")
+                       .removeprefix("write code")
+                       .removeprefix("code")
+                       .strip()
+                )
+                funcs.append(asyncio.to_thread(WriteCode, clean))
+            else:
+                print("[red]CodeWriter not available.[/red]")
 
         elif cmd.startswith("google search"):
             funcs.append(asyncio.to_thread(GoogleSearch, cmd.removeprefix("google search").strip()))

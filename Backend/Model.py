@@ -1,10 +1,8 @@
 import cohere
 import os
 from dotenv import load_dotenv
+import time
 
-# -----------------------------
-# LOAD API KEY
-# -----------------------------
 load_dotenv()
 
 CohereAPIKey = os.getenv("CohereAPIKey")
@@ -14,9 +12,6 @@ if not CohereAPIKey:
 
 co = cohere.Client(api_key=CohereAPIKey)
 
-# -----------------------------
-# PREAMBLE (DECISION BRAIN)
-# -----------------------------
 preamble = """
 You are a Decision-Making Brain (Router System).
 
@@ -47,10 +42,6 @@ Rules:
 - No explanation, no extra text.
 """
 
-# -----------------------------
-# EXAMPLES (FEW SHOT LEARNING)
-# -----------------------------
-
 ChatHistory = [
     {"role": "USER", "message": "hello how are you"},
     {"role": "CHATBOT", "message": "general hello how are you"},
@@ -68,13 +59,8 @@ ChatHistory = [
     {"role": "CHATBOT", "message": "close whatsapp, close telegram"}
 ]
 
-# -----------------------------
-# BRAIN FUNCTION
-# -----------------------------
-import time
-
 def Brain(prompt: str):
-    for attempt in range(3):  # 3 retries
+    for attempt in range(3):
         try:
             response = co.chat(
                 model="command-a-03-2025",
@@ -93,24 +79,3 @@ def Brain(prompt: str):
             time.sleep(2)
 
     return ["error: network issue"]
-
-# -----------------------------
-# TEST LOOP
-# -----------------------------
-
-if __name__ == "__main__":
-    print("JARVIS Activated✅")
-
-    while True:
-        try:
-            user_input = input(":) ")
-
-            if user_input.lower() in ["exit", "quit"]:
-                print("Goodbye 👋")
-                break
-
-            print(Brain(user_input))
-
-        except KeyboardInterrupt:
-            print("\n🌐 Tracking System...")
-            continue
