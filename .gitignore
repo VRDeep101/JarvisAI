@@ -2,3 +2,9 @@
 .venv/
 __pycache__/
 Data/
+# Kokoro model files
+kokoro-v1.0.onnx
+voices-v1.0.bin
+
+# Audio output
+Data/speech.wav
