@@ -1,3 +1,9 @@
+# ─────────────────────────────────────────────────────────────
+#  GUI.py  —  Jarvis Frontend
+#  FIX: PermissionError on Status.data / all .data files
+#  FIX: Safe file read/write with retry
+# ─────────────────────────────────────────────────────────────
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTextEdit, QStackedWidget,
                              QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                              QFrame, QLabel, QSizePolicy, QGraphicsOpacityEffect)
@@ -10,23 +16,61 @@ import sys
 import os
 import math
 import random
+import time
 
 env_vars      = dotenv_values(".env")
-Assistantname = env_vars.get("Assistantname")
+Assistantname = env_vars.get("Assistantname", "Jarvis")
 current_dir   = os.getcwd()
 old_chat_message = ""
-TempDirPath     = rf"{current_dir}\Frontend\Files"
-GraphicsDirPath = rf"{current_dir}\Frontend\Graphics"
 
-def AnswerModifier(Answer):
+TempDirPath     = os.path.join(current_dir, "Frontend", "Files")
+GraphicsDirPath = os.path.join(current_dir, "Frontend", "Graphics")
+
+# Ensure directories exist
+os.makedirs(TempDirPath, exist_ok=True)
+
+
+# ── Safe File Helpers (PermissionError fix) ───────────────────
+def _safe_read(filepath: str, retries: int = 5, delay: float = 0.2) -> str:
+    for _ in range(retries):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except PermissionError:
+            time.sleep(delay)
+        except FileNotFoundError:
+            return ""
+        except Exception:
+            return ""
+    return ""
+
+
+def _safe_write(filepath: str, content: str, retries: int = 5, delay: float = 0.2) -> bool:
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    for _ in range(retries):
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except PermissionError:
+            time.sleep(delay)
+        except Exception:
+            return False
+    return False
+
+
+# ── Helpers ────────────────────────────────────────────────────
+def AnswerModifier(Answer: str) -> str:
     lines = Answer.split('\n')
     non_empty_lines = [line for line in lines if line.strip()]
-    modified_answer = '\n'.join(non_empty_lines)
-    return modified_answer
+    return '\n'.join(non_empty_lines)
 
-def QueryModifier(Query):
+
+def QueryModifier(Query: str) -> str:
     new_query   = Query.lower().strip()
     query_words = new_query.split()
+    if not query_words:
+        return Query
     question_words = ["how", "what", "who", "where", "when", "why", "which",
                       "whose", "whom", "can you", "what's", "where's", "how's"]
     if any(word + " " in new_query for word in question_words):
@@ -41,41 +85,48 @@ def QueryModifier(Query):
             new_query += "."
     return new_query.capitalize()
 
-def SetMicrophoneStatus(Command):
-    with open(rf"{TempDirPath}\Mic.data", "w", encoding='utf-8') as file:
-        file.write(Command)
 
-def GetMicrophoneStatus():
-    with open(rf"{TempDirPath}\Mic.data", "r", encoding='utf-8') as file:
-        Status = file.read()
-    return Status
+def SetMicrophoneStatus(Command: str) -> None:
+    _safe_write(os.path.join(TempDirPath, "Mic.data"), Command)
 
-def SetAssistantStatus(Status):
-    with open(rf"{TempDirPath}\Status.data", "w", encoding='utf-8') as file:
-        file.write(Status)
 
-def GetAssistantStatus():
-    with open(rf"{TempDirPath}\Status.data", "r", encoding='utf-8') as file:
-        Status = file.read()
-    return Status
+def GetMicrophoneStatus() -> str:
+    return _safe_read(os.path.join(TempDirPath, "Mic.data"))
 
-def MicButtonInitialed():
+
+def SetAssistantStatus(Status: str) -> None:
+    _safe_write(os.path.join(TempDirPath, "Status.data"), Status)
+
+
+def GetAssistantStatus() -> str:
+    return _safe_read(os.path.join(TempDirPath, "Status.data"))
+
+
+def MicButtonInitialed() -> None:
     SetMicrophoneStatus("False")
 
-def MicButtonClosed():
+
+def MicButtonClosed() -> None:
     SetMicrophoneStatus("True")
 
-def GraphicsDirectoryPath(Filename):
-    Path = rf'{GraphicsDirPath}\{Filename}'
-    return Path
 
-def TempDirectoryPath(Filename):
-    Path = rf'{TempDirPath}\{Filename}'
-    return Path
+def GraphicsDirectoryPath(Filename: str) -> str:
+    return os.path.join(GraphicsDirPath, Filename)
 
-def ShowTextToScreen(Text):
-    with open(rf'{TempDirPath}\Responses.data', "w", encoding='utf-8') as file:
-        file.write(Text)
+
+def TempDirectoryPath(Filename: str) -> str:
+    return os.path.join(TempDirPath, Filename)
+
+
+def ShowTextToScreen(Text: str) -> None:
+    _safe_write(os.path.join(TempDirPath, "Responses.data"), Text)
+
+
+# ── Initialize data files if missing ──────────────────────────
+for _fname in ["Mic.data", "Status.data", "Responses.data", "Database.data"]:
+    _fpath = os.path.join(TempDirPath, _fname)
+    if not os.path.exists(_fpath):
+        _safe_write(_fpath, "")
 
 
 # ─────────────────────────────────────────────
@@ -94,7 +145,7 @@ class JarvisOrb(QWidget):
             th = random.uniform(0, math.pi * 2)
             ph = math.acos(2 * random.random() - 1)
             self.particles.append({
-                'th':  th,  'ph':  ph,
+                'th':  th, 'ph':  ph,
                 'r_f': 0.3 + random.random() * 0.65,
                 'spd': 0.00015 + random.random() * 0.0003,
                 'pt':  random.uniform(0, math.pi * 2),
@@ -261,10 +312,9 @@ class JarvisOrb(QWidget):
 
 
 # ─────────────────────────────────────────────
-#  HUD BOX HELPER WIDGET
+#  HUD BOX
 # ─────────────────────────────────────────────
 class HudBox(QWidget):
-    """Reusable animated HUD data box."""
     def __init__(self, parent, title, value, sub, fill_f):
         super().__init__(parent)
         self._title  = title
@@ -288,31 +338,26 @@ class HudBox(QWidget):
         pulse   = math.sin(self._t * 0.7) * 0.5 + 0.5
         box_a   = int((0.38 + pulse * 0.14) * 255)
 
-        # Border
         bp = QPen(QColor(0, 191, 255, box_a))
         bp.setWidthF(0.8)
         painter.setPen(bp)
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(QRectF(0, 0, w, h), 4, 4)
 
-        # Title
         painter.setFont(QFont("Courier New", 7))
         painter.setPen(QColor(0, 191, 255, box_a))
         painter.drawText(QPointF(10, 17), self._title)
 
-        # Value
         fv = QFont("Courier New", 13)
         fv.setBold(True)
         painter.setFont(fv)
         painter.setPen(QColor(0, 225, 255, box_a))
         painter.drawText(QPointF(10, 35), self._value)
 
-        # Sub
         painter.setFont(QFont("Courier New", 7))
         painter.setPen(QColor(0, 191, 255, max(0, box_a - 60)))
         painter.drawText(QPointF(10, 50), self._sub)
 
-        # Bar
         bar_w = int((w - 20) * self._fill_f)
         painter.setPen(QPen(QColor(0, 191, 255, 50), 0.4))
         painter.drawLine(10, 58, w - 10, 58)
@@ -323,7 +368,7 @@ class HudBox(QWidget):
 
 
 # ─────────────────────────────────────────────
-#  INITIAL SCREEN  — FIX: orb upar, mic neeche, HUD boxes visible
+#  INITIAL SCREEN
 # ─────────────────────────────────────────────
 class InitialScreen(QWidget):
     def __init__(self, parent=None):
@@ -335,21 +380,18 @@ class InitialScreen(QWidget):
         self.setFixedSize(self._sw, self._sh)
         self.setStyleSheet("background-color: #000005;")
 
-        # ambient animation clock
         self._amb_t = 0.0
         self._amb_timer = QTimer(self)
         self._amb_timer.timeout.connect(self._amb_tick)
         self._amb_timer.start(50)
 
-        # ── Orb widget — thoda upar rakha taaki mic ke liye neeche jagah rahe
         orb_h = int(self._sw * 9 / 16)
         self.orb = JarvisOrb(self)
         self.orb.setFixedSize(self._sw, orb_h)
-        orb_top = int(self._sh * 0.02)          # <── 0.03 se 0.02 kiya
+        orb_top = int(self._sh * 0.02)
         self.orb.move(0, orb_top)
         orb_centre_y = orb_top + orb_h // 2
 
-        # ── Status label — orb centre ke neeche, thoda aur neeche
         self.label = QLabel("", self)
         self.label.setStyleSheet("""
             color: #00cfff;
@@ -363,11 +405,9 @@ class InitialScreen(QWidget):
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setFixedWidth(300)
         label_h   = 36
-        # KEY FIX: 0.28 * orb_h neeche — orb boundary ke baad clearly
         label_top = orb_centre_y + int(orb_h * 0.28)
         self.label.move((self._sw - 300) // 2, label_top)
 
-        # ── Mic button — 14px below label
         self.icon_label = QLabel(self)
         self.icon_label.setFixedSize(70, 70)
         self.icon_label.setAlignment(Qt.AlignCenter)
@@ -379,15 +419,13 @@ class InitialScreen(QWidget):
         mic_top = label_top + label_h + 14
         self.icon_label.move((self._sw - 70) // 2, mic_top)
 
-        # ── HUD Boxes — TOP corners
         self.hud_tl = HudBox(self, "CORE TEMP",  "98.6°", "STATUS: NOMINAL", 0.62)
         self.hud_tr = HudBox(self, "NEURAL NET", "99.2%", "SYNC:  ACTIVE",   0.56)
         self.hud_tl.move(20, 46)
         self.hud_tr.move(self._sw - 148, 46)
 
-        # ── HUD Boxes — BOTTOM corners  (naye elements)
-        self.hud_bl = HudBox(self, "UPTIME",  "14:22", "MODE: ACTIVE",   0.45)
-        self.hud_br = HudBox(self, "MEMORY",  "87%",   "RAM: 14.2 GB",   0.87)
+        self.hud_bl = HudBox(self, "UPTIME",  "14:22", "MODE: ACTIVE", 0.45)
+        self.hud_br = HudBox(self, "MEMORY",  "87%",   "RAM: 14.2 GB", 0.87)
         bottom_y = self._sh - 90
         self.hud_bl.move(20, bottom_y)
         self.hud_br.move(self._sw - 148, bottom_y)
@@ -396,7 +434,6 @@ class InitialScreen(QWidget):
         self.toggle_icon()
         self.icon_label.mousePressEvent = self.toggle_icon
 
-        # raise children above paintEvent canvas
         self.orb.raise_()
         self.label.raise_()
         self.icon_label.raise_()
@@ -405,7 +442,6 @@ class InitialScreen(QWidget):
         self.hud_bl.raise_()
         self.hud_br.raise_()
 
-        # status polling
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self.SpeechRecogText)
         self._status_timer.start(5)
@@ -423,7 +459,6 @@ class InitialScreen(QWidget):
 
         painter.fillRect(self.rect(), QColor(0, 0, 5))
 
-        # ── Corner brackets
         blen = 40
         ba   = int((0.50 + pulse * 0.18) * 255)
         pen  = QPen(QColor(0, 191, 255, ba))
@@ -439,7 +474,6 @@ class InitialScreen(QWidget):
             painter.drawLine(cx2, cy2, cx2 + dx*blen, cy2)
             painter.drawLine(cx2, cy2, cx2,           cy2 + dy*blen)
 
-        # ── Side scan lines
         la   = int((0.25 + pulse * 0.12) * 255)
         pen2 = QPen(QColor(0, 210, 255, la))
         pen2.setWidthF(0.8)
@@ -450,7 +484,6 @@ class InitialScreen(QWidget):
             painter.drawLine(22,   y, 22+ln,   y)
             painter.drawLine(w-22, y, w-22-ln, y)
 
-        # ── Floating dots
         painter.setPen(Qt.NoPen)
         for dpx, dpy in [
             (50, h//2-100),(74, h//2-76),(46, h//2+84),(86, h//2+104),
@@ -460,7 +493,6 @@ class InitialScreen(QWidget):
             painter.setBrush(QBrush(QColor(0, 191, 255, a2)))
             painter.drawEllipse(QPointF(float(dpx), float(dpy)), 2.2, 2.2)
 
-        # ── Top scan bar
         ta   = int((0.35 + pulse * 0.14) * 255)
         pen3 = QPen(QColor(0, 210, 255, ta))
         pen3.setWidthF(0.6)
@@ -470,23 +502,20 @@ class InitialScreen(QWidget):
         painter.setPen(QColor(0, 210, 255, ta))
         painter.drawText(QPointF(float(w//2 - 42), 29.0), "SYSTEM ONLINE")
 
-        # ── Bottom scan bar
         painter.setPen(pen3)
         painter.drawLine(w//2 - 120, h-34, w//2 + 120, h-34)
-
-        # ── Bottom center label
         painter.setFont(QFont("Courier New", 8))
         painter.setPen(QColor(0, 210, 255, ta))
         painter.drawText(
             QPointF(float(w//2 - 90), float(h - 20)),
-            f"◈  JARVIS NEURAL CORE v4.1  ◈"
+            "◈  JARVIS NEURAL CORE v4.1  ◈"
         )
 
         painter.end()
 
     def SpeechRecogText(self):
-        with open(TempDirectoryPath('Status.data'), "r", encoding='utf-8') as file:
-            messages = file.read()
+        # FIXED: safe read — no PermissionError crash
+        messages = _safe_read(TempDirectoryPath('Status.data'))
         self.label.setText(messages)
 
     def load_icon(self, path, width=40, height=40):
@@ -511,10 +540,11 @@ class InitialScreen(QWidget):
 # ─────────────────────────────────────────────
 class ChatSection(QWidget):
     def __init__(self):
-        super(ChatSection, self).__init__()
+        super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(-10, 40, 40, 100)
         layout.setSpacing(-100)
+
         self.chat_text_edit = QTextEdit()
         self.chat_text_edit.setReadOnly(True)
         self.chat_text_edit.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -524,20 +554,21 @@ class ChatSection(QWidget):
         layout.setSizeConstraint(QVBoxLayout.SetDefaultConstraint)
         layout.setStretch(1, 1)
         self.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding))
+
         text_color = QColor(Qt.blue)
         text_color_text = QTextCharFormat()
         text_color_text.setForeground(text_color)
         self.chat_text_edit.setCurrentCharFormat(text_color_text)
+
         self.gif_label = QLabel()
         self.gif_label.setStyleSheet("border: none;")
         movie = QMovie(GraphicsDirectoryPath('Jarvis.gif'))
-        max_gif_size_W = 480
-        max_gif_size_H = 270
-        movie.setScaledSize(QSize(max_gif_size_W, max_gif_size_H))
+        movie.setScaledSize(QSize(480, 270))
         self.gif_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
         self.gif_label.setMovie(movie)
         movie.start()
         layout.addWidget(self.gif_label)
+
         self.label = QLabel("")
         self.label.setStyleSheet(
             "color: white; font-size:16px; margin-right: 195px;"
@@ -546,13 +577,16 @@ class ChatSection(QWidget):
         layout.addWidget(self.label)
         layout.setSpacing(-10)
         layout.addWidget(self.gif_label)
+
         font = QFont()
         font.setPointSize(13)
         self.chat_text_edit.setFont(font)
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.loadMessages)
         self.timer.timeout.connect(self.SpeechRecogText)
         self.timer.start(5)
+
         self.chat_text_edit.viewport().installEventFilter(self)
         self.setStyleSheet("""
 QScrollBar:vertical {
@@ -579,39 +613,22 @@ background: none;
 
     def loadMessages(self):
         global old_chat_message
-        with open(TempDirectoryPath('Responses.data'), "r", encoding='utf-8') as file:
-            messages = file.read()
-        if None == messages:
-            pass
-        elif len(messages) <= 1:
-            pass
-        elif str(old_chat_message) == str(messages):
-            pass
-        else:
-            self.addMessage(message=messages, color='White')
-            old_chat_message = messages
+        # FIXED: safe read
+        messages = _safe_read(TempDirectoryPath('Responses.data'))
+        if not messages or len(messages) <= 1:
+            return
+        if str(old_chat_message) == str(messages):
+            return
+        self.addMessage(message=messages, color='White')
+        old_chat_message = messages
 
     def SpeechRecogText(self):
-        with open(TempDirectoryPath('Status.data'), "r", encoding='utf-8') as file:
-            messages = file.read()
+        # FIXED: safe read
+        messages = _safe_read(TempDirectoryPath('Status.data'))
         self.label.setText(messages)
 
-    def load_icon(self, path, width=60, height=60):
-        pixmap = QPixmap(path)
-        new_pixmap = pixmap.scaled(width, height)
-        self.icon_label.setPixmap(new_pixmap)
-
-    def toggle_icon(self, event=None):
-        if self.toggled:
-            self.load_icon(GraphicsDirectoryPath('voice.png'), 60, 60)
-            MicButtonInitialed()
-        else:
-            self.load_icon(GraphicsDirectoryPath('mic.png'), 60, 60)
-            MicButtonClosed()
-        self.toggled = not self.toggled
-
     def addMessage(self, message, color):
-        cursor = self.chat_text_edit.textCursor()
+        cursor  = self.chat_text_edit.textCursor()
         format  = QTextCharFormat()
         formatm = QTextBlockFormat()
         formatm.setTopMargin(10)
@@ -836,24 +853,6 @@ class CustomTopBar(QWidget):
     def mouseMoveEvent(self, event):
         if self.draggable and self._drag_offset:
             self.parent().move(event.globalPos() - self._drag_offset)
-
-    def showMessageScreen(self):
-        if self.current_screen is not None:
-            self.current_screen.hide()
-        message_screen = MessageScreen(self)
-        layout = self.parent().layout()
-        if layout is not None:
-            layout.addWidget(message_screen)
-        self.current_screen = message_screen
-
-    def showInitialScreen(self):
-        if self.current_screen is not None:
-            self.current_screen.hide()
-        initial_screen = InitialScreen(self)
-        layout = self.parent().layout()
-        if layout is not None:
-            layout.addWidget(initial_screen)
-        self.current_screen = initial_screen
 
 
 # ─────────────────────────────────────────────

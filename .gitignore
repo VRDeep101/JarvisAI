@@ -8,3 +8,6 @@ voices-v1.0.bin
 
 # Audio output
 Data/speech.wav
+Memories/
+Memory.py 
+EQ.py 

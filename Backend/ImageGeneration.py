@@ -1,3 +1,10 @@
+# ─────────────────────────────────────────────────────────────
+#  ImageGeneration.py  —  Jarvis Image Generator
+#  - HuggingFace FLUX model
+#  - Prompt clean karo automatically
+#  - Images Data folder mein save
+# ─────────────────────────────────────────────────────────────
+
 import asyncio
 from PIL import Image
 from dotenv import get_key
@@ -5,60 +12,105 @@ import os
 from time import sleep
 from huggingface_hub import InferenceClient
 
-def open_images(prompt):
-    folder_path = r"Data"
-    prompt = prompt.replace(" ", "_")
-    Files = [f"{prompt}{i}.jpg" for i in range(1, 5)]
-    for jpg_file in Files:
-        image_path = os.path.join(folder_path, jpg_file)
-        try:
-            img = Image.open(image_path)
-            print(f"Opening image: {image_path}")
-            img.show()
-            sleep(1)
-        except IOError:
-            print(f"Unable to open {image_path}")
-
 client = InferenceClient(api_key=get_key(".env", "HuggingFaceAPIKey"))
 
-def generate_single_image(prompt, index):
+DATA_FILE = os.path.join("Frontend", "Files", "ImageGeneration.data")
+os.makedirs(os.path.join("Frontend", "Files"), exist_ok=True)
+os.makedirs("Data", exist_ok=True)
+
+
+def _clean_prompt(prompt: str) -> str:
+    prompt = prompt.lower().strip()
+    for prefix in ["generate image", "generate images", "generate"]:
+        if prompt.startswith(prefix):
+            prompt = prompt[len(prefix):].strip()
+    return prompt
+
+
+def open_images(prompt: str) -> None:
+    safe_prompt = _clean_prompt(prompt).replace(" ", "_")
+    for i in range(1, 5):
+        image_path = os.path.join("Data", f"{safe_prompt}{i}.jpg")
+        if os.path.exists(image_path):
+            print(f"[ImageGen] Opening: {image_path}")
+            try:
+                os.startfile(os.path.abspath(image_path))
+                sleep(0.5)
+            except Exception:
+                try:
+                    img = Image.open(image_path)
+                    img.show()
+                    sleep(1)
+                except Exception as e:
+                    print(f"[ImageGen] Could not open {image_path}: {e}")
+        else:
+            print(f"[ImageGen] File not found: {image_path}")
+
+
+def generate_single_image(prompt: str, index: int) -> None:
     try:
+        clean = _clean_prompt(prompt)
         image = client.text_to_image(
-            prompt=f"{prompt}, quality-4K, ultra detailed, high resolution",
+            prompt=f"{clean}, quality-4K, ultra detailed, high resolution, photorealistic",
             model="black-forest-labs/FLUX.1-schnell"
         )
-        os.makedirs("Data", exist_ok=True)
-        file_path = f"Data/{prompt.replace(' ', '_')}{index}.jpg"
-        image.save(file_path)
-        print(f"Saved: {file_path}")
+        safe  = clean.replace(" ", "_")
+        path  = os.path.join("Data", f"{safe}{index}.jpg")
+        image.save(path)
+        print(f"[ImageGen] Saved: {path}")
     except Exception as e:
-        print(f"Image {index} error: {e}")
+        print(f"[ImageGen] Error image {index}: {e}")
 
-async def generate_images(prompt: str):
-    tasks = []
-    for i in range(1, 5):
-        task = asyncio.to_thread(generate_single_image, prompt, i)
-        tasks.append(task)
+
+async def generate_images(prompt: str) -> None:
+    tasks = [asyncio.to_thread(generate_single_image, prompt, i) for i in range(1, 5)]
     await asyncio.gather(*tasks)
 
-def GenerateImages(prompt: str):
+
+def GenerateImages(prompt: str) -> None:
     asyncio.run(generate_images(prompt))
     open_images(prompt)
 
+
+def _safe_read_data() -> tuple:
+    try:
+        with open(DATA_FILE, "r") as f:
+            data = f.read().strip()
+        if "," not in data:
+            return None, None
+        parts  = data.split(",", 1)
+        prompt = parts[0].strip()
+        status = parts[1].strip()
+        return prompt, status
+    except FileNotFoundError:
+        with open(DATA_FILE, "w") as f:
+            f.write("False,False")
+        return None, None
+    except Exception as e:
+        print(f"[ImageGen] Read error: {e}")
+        return None, None
+
+
+def _reset_data() -> None:
+    try:
+        with open(DATA_FILE, "w") as f:
+            f.write("False,False")
+    except Exception:
+        pass
+
+
+# ── Main Loop ─────────────────────────────────────────────────
 while True:
     try:
-        with open(r"Frontend\Files\ImageGeneration.data", "r") as f:
-            Data: str = f.read()
-        Prompt, Status = Data.split(",")
-        Prompt = Prompt.strip()
-        Status = Status.strip()
-        if Status == "True":
-            print(f"Generating Images for: {Prompt} ...")
-            GenerateImages(prompt=Prompt)
-            with open(r"Frontend\Files\ImageGeneration.data", "w") as f:
-                f.write("False,False")
+        prompt, status = _safe_read_data()
+
+        if status == "True" and prompt and prompt != "False":
+            print(f"[ImageGen] Generating: {prompt}")
+            GenerateImages(prompt=prompt)
+            _reset_data()
         else:
             sleep(1)
+
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[ImageGen] Unexpected error: {e}")
         sleep(1)

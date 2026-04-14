@@ -1,3 +1,11 @@
+# ─────────────────────────────────────────────────────────────
+#  TextToSpeech.py  —  Jarvis Voice Output
+#  - EQ tone aware (rate + pitch)
+#  - Natural pauses between sentences
+#  - Plan lines voice mein nahi aate
+#  - Fast streaming pipeline
+# ─────────────────────────────────────────────────────────────
+
 import pygame
 import random
 import soundfile as sf
@@ -8,39 +16,57 @@ import queue
 from kokoro_onnx import Kokoro
 from dotenv import dotenv_values
 
-# ─── Config ──────────────────────────────────────────────────────────────────
+# ─── Config ───────────────────────────────────────────────────
+_config  = dotenv_values(".env")
 
-_config    = dotenv_values(".env")
+VOICE_ID  = "am_puck"
+BASE_SPEED = 0.85        # slightly slower = more natural
+LANGUAGE  = "en-us"
 
-VOICE_ID   = "am_puck"
-SPEED      = 0.8
-LANGUAGE   = "en-us"
-AUDIO_PATH = r"Data\speech_{}.wav"   # {} = slot index (double-buffered)
+AUDIO_PATH = os.path.join("Data", "speech_{}.wav")
+os.makedirs("Data", exist_ok=True)
 
 _kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
 pygame.mixer.pre_init(frequency=24000, size=-16, channels=1, buffer=512)
 pygame.mixer.init()
+if not pygame.mixer.get_init():
+    print("[TTS ERROR] pygame mixer init FAILED!")
+else:
+    print("[TTS] Audio system ready ✅")
 
-# ─── Overflow Messages ────────────────────────────────────────────────────────
-
+# ─── Overflow Lines ────────────────────────────────────────────
 OVERFLOW_LINES = [
-    "The rest of the answer is up on the screen for you — do have a look.",
-    "The remaining details are right there on the screen sir,whenever you're ready.",
-    "There's more to it — check the chat screen for the complete picture.",
-    
+    "The rest is on the screen for you.",
+    "Check the chat for the full details.",
+    "There's more up on the screen, have a look.",
 ]
 
-# ─── Sentence Splitter ───────────────────────────────────────────────────────
+# ─── Plan/Internal Line Filter ────────────────────────────────
+_FILTER_PREFIXES = [
+    "risky:", "plan:", "note:", "internal:", "step ", "1.", "2.", "3."
+]
 
-def _split_sentences(text: str) -> list[str]:
-    """Split on . ! ? — keep non-empty, stripped sentences."""
-    parts = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [p.strip() for p in parts if p.strip()]
+def _is_filterable(line: str) -> bool:
+    l = line.lower().strip()
+    for prefix in _FILTER_PREFIXES:
+        if l.startswith(prefix):
+            return True
+    return False
 
-# ─── Natural Text Preprocessor ───────────────────────────────────────────────
 
-def _make_natural(text: str) -> str:
+# ─── Text Preprocessor ────────────────────────────────────────
+def _clean_for_speech(text: str) -> str:
+    # Remove markdown
+    text = re.sub(r'\*+', '', text)
+    text = re.sub(r'#+\s*', '', text)
+    text = re.sub(r'`+', '', text)
+    # Remove URLs
+    text = re.sub(r'http\S+', '', text)
+    # Filter plan lines
+    lines = [l for l in text.split('\n') if not _is_filterable(l)]
+    text = ' '.join(lines)
+    # Natural commas before connectors
     text = re.sub(
         r'\s+(and|but|so|because|however|though|although|which|who)\s+',
         r', \1 ', text, flags=re.IGNORECASE
@@ -49,37 +75,58 @@ def _make_natural(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ─── Streaming Speak ─────────────────────────────────────────────────────────
 
-def speak(text: str, callback=lambda r=None: True) -> bool:
+# ─── Sentence Splitter ────────────────────────────────────────
+def _split_sentences(text: str) -> list:
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [p.strip() for p in parts if p.strip() and len(p.strip()) > 2]
+
+
+# ─── Speed Parser ─────────────────────────────────────────────
+def _parse_rate(rate_str: str) -> float:
     """
-    Pipeline approach:
-      - Producer thread: generates audio for each sentence → puts (samples, rate, slot) in queue
-      - Main thread: plays each chunk as soon as it's ready
-    First audio starts playing while sentence 2 is still being generated → near-zero wait.
+    Convert EQ rate string to kokoro speed float.
+    '+8%' → 0.93  (faster = lower kokoro speed value)
+    '-12%' → 0.97 (slower = higher kokoro speed value)
     """
-    sentences = _split_sentences(text)
+    try:
+        val = int(re.sub(r'[^-\d]', '', rate_str))
+        # kokoro speed: 1.0 = normal, <1 = slower, but feels faster
+        # EQ rate +% means faster speech = lower kokoro speed
+        speed = BASE_SPEED - (val * 0.003)
+        return max(0.5, min(1.2, speed))
+    except Exception:
+        return BASE_SPEED
+
+
+# ─── Core Streaming Speak ─────────────────────────────────────
+def speak(text: str, speed: float = None) -> bool:
+    """
+    Streaming TTS:
+    - Producer generates audio sentence by sentence
+    - Player plays as soon as each is ready
+    """
+    clean     = _clean_for_speech(text)
+    sentences = _split_sentences(clean)
     if not sentences:
         return False
 
-    audio_q: queue.Queue = queue.Queue(maxsize=2)   # at most 2 chunks buffered
-    DONE = object()                                  # sentinel
-
-    os.makedirs(os.path.dirname(AUDIO_PATH.format(0)), exist_ok=True)
+    final_speed = speed if speed is not None else BASE_SPEED
+    audio_q = queue.Queue(maxsize=2)
+    DONE    = object()
 
     def producer():
         for idx, sentence in enumerate(sentences):
             try:
-                natural = _make_natural(sentence)
                 samples, sample_rate = _kokoro.create(
-                    natural, voice=VOICE_ID, speed=SPEED, lang=LANGUAGE
+                    sentence, voice=VOICE_ID, speed=final_speed, lang=LANGUAGE
                 )
-                slot = idx % 2          # double-buffer: alternates between slot 0 and 1
+                slot = idx % 2
                 path = AUDIO_PATH.format(slot)
                 sf.write(path, samples, sample_rate)
                 audio_q.put((path, sample_rate))
             except Exception as exc:
-                print(f"[TTS] Generation error (sentence {idx}): {exc}")
+                print(f"[TTS] Gen error sentence {idx}: {exc}")
         audio_q.put(DONE)
 
     t = threading.Thread(target=producer, daemon=True)
@@ -92,23 +139,20 @@ def speak(text: str, callback=lambda r=None: True) -> bool:
             break
         path, _ = item
         try:
+            if not os.path.exists(path):
+                continue
             pygame.mixer.music.load(path)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
-                if not callback():
-                    pygame.mixer.music.stop()
-                    success = False
-                    break
                 pygame.time.Clock().tick(10)
+            # Natural pause between sentences
+            pygame.time.wait(120)
         except Exception as exc:
             print(f"[TTS] Playback error: {exc}")
             success = False
-
-        if not success:
             break
 
     try:
-        callback(False)
         pygame.mixer.music.stop()
     except Exception:
         pass
@@ -117,26 +161,32 @@ def speak(text: str, callback=lambda r=None: True) -> bool:
     return success
 
 
-def say(text: str, callback=lambda r=None: True) -> None:
-    """Smart speak — long text gets truncated to first 2 sentences + overflow."""
-    sentences = _split_sentences(str(text))
+# ─── Smart Say ────────────────────────────────────────────────
+def say(text: str, rate: str = "+0%", pitch: str = "+0Hz") -> None:
+    """
+    Main TTS function:
+    - Long text: first 2 sentences + overflow message
+    - EQ rate/pitch applied to speed
+    - Plan lines filtered automatically
+    """
+    speed     = _parse_rate(rate)
+    sentences = _split_sentences(_clean_for_speech(str(text)))
     is_long   = len(sentences) > 4 and len(text) >= 250
 
     if is_long:
-        short = ". ".join(sentences[:2]) + ". " + random.choice(OVERFLOW_LINES)
-        speak(short, callback)
+        short_text = ". ".join(s.rstrip('.') for s in sentences[:2])
+        short_text += ". " + random.choice(OVERFLOW_LINES)
+        speak(short_text, speed=speed)
     else:
-        speak(text, callback)
+        speak(text, speed=speed)
 
 
-# ─── Entry Point ─────────────────────────────────────────────────────────────
-
+# ─── Entry Point ──────────────────────────────────────────────
 if __name__ == "__main__":
-    print("[ TTS Engine ready ] Type something and press Enter. ('exit' to quit)")
+    print("[ TTS Engine ready ] Type to test. ('exit' to quit)")
     while True:
         user_input = input(":) ").strip()
         if user_input.lower() in {"exit", "quit"}:
-            print("Later!")
             break
         if user_input:
             say(user_input)

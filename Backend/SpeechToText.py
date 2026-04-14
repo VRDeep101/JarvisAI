@@ -1,3 +1,10 @@
+# ─────────────────────────────────────────────────────────────
+#  SpeechToText.py  —  Jarvis Voice Input
+#  - Any language detect karo
+#  - Stable file access (no PermissionError)
+#  - Chrome-based Web Speech API
+# ─────────────────────────────────────────────────────────────
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -11,9 +18,10 @@ import threading
 import itertools
 import sys
 
-env_vars = dotenv_values(".env")
+env_vars      = dotenv_values(".env")
 InputLanguage = env_vars.get("InputLanguage", "en-IN")
 
+# ── Voice HTML — multi-language support ───────────────────────
 HtmlCode = f'''<!DOCTYPE html>
 <html lang="en">
 <head><title>Speech Recognition</title></head>
@@ -63,17 +71,40 @@ HtmlCode = f'''<!DOCTYPE html>
 </html>'''
 
 os.makedirs("Data", exist_ok=True)
-with open("Data/Voice.html", "w") as f:
+with open(os.path.join("Data", "Voice.html"), "w") as f:
     f.write(HtmlCode)
 
 current_dir = os.getcwd()
-Link = f"file:///{current_dir}/Data/Voice.html"
+Link        = f"file:///{current_dir}/Data/Voice.html"
+TempDirPath = os.path.join(current_dir, "Frontend", "Files")
+os.makedirs(TempDirPath, exist_ok=True)
 
-TempDirPath = rf"{current_dir}/Frontend/Files"
+
+# ── Safe File Read (no PermissionError crash) ──────────────────
+def _safe_read(filepath: str, retries: int = 5, delay: float = 0.3) -> str:
+    for _ in range(retries):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return f.read()
+        except PermissionError:
+            time.sleep(delay)
+        except FileNotFoundError:
+            return ""
+    return ""
 
 
-# ── Animations ──────────────────────────────────────────────
+def _safe_write(filepath: str, content: str, retries: int = 5, delay: float = 0.3) -> bool:
+    for _ in range(retries):
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except PermissionError:
+            time.sleep(delay)
+    return False
 
+
+# ── Animations ────────────────────────────────────────────────
 def animate(frames, stop_event, delay=0.4):
     for frame in itertools.cycle(frames):
         if stop_event.is_set():
@@ -97,20 +128,16 @@ def stop_animation(stop_event, t):
     t.join()
 
 
-# ── Chrome Setup ─────────────────────────────────────────────
-
-setup_frames = [
-    "⚙️  Setting up your Jarvis   ",
-    "⚙️  Setting up your Jarvis.  ",
-    "⚙️  Setting up your Jarvis.. ",
-    "⚙️  Setting up your Jarvis...",
-]
+# ── Chrome Setup ──────────────────────────────────────────────
+setup_frames = ["⚙️  Setting up Jarvis   ", "⚙️  Setting up Jarvis.  ",
+                "⚙️  Setting up Jarvis.. ", "⚙️  Setting up Jarvis..."]
 stop_event, t = run_animation(setup_frames)
 
 chrome_options = Options()
 chrome_options.add_argument("--use-fake-ui-for-media-stream")
 chrome_options.add_argument("--use-fake-device-for-media-stream")
 chrome_options.add_argument("--allow-file-access-from-files")
+chrome_options.add_argument("--headless=new")
 chrome_options.add_argument("--window-position=-10000,0")
 chrome_options.add_argument(
     "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -123,24 +150,24 @@ driver = webdriver.Chrome(
 )
 driver.get(Link)
 time.sleep(0.8)
-
 stop_animation(stop_event, t)
 print("✅ Jarvis is ready!\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────
-
-def SetAssistantStatus(Status):
-    os.makedirs(TempDirPath, exist_ok=True)
-    with open(rf"{TempDirPath}/Status.data", "w", encoding="utf-8") as f:
-        f.write(Status)
+def SetAssistantStatus(Status: str) -> None:
+    path = os.path.join(TempDirPath, "Status.data")
+    _safe_write(path, Status)
 
 
-def UniversalTranslator(Text):
-    return mt.translate(Text, "en", "auto")
+def UniversalTranslator(Text: str) -> str:
+    try:
+        return mt.translate(Text, "en", "auto")
+    except Exception:
+        return Text
 
 
-def QueryModifier(Query):
+def QueryModifier(Query: str) -> str:
     q = Query.lower().strip()
     if not q:
         return Query
@@ -156,29 +183,33 @@ def QueryModifier(Query):
     return (q + ("?" if is_question else ".")).capitalize()
 
 
-# ── Main Loop ─────────────────────────────────────────────────
+# ── Main Voice Recognition ─────────────────────────────────────
+def SpeechRecognition() -> str:
+    rec_frames = ["🎙  Listening..."]
+    stop_ev, anim_t = run_animation(rec_frames)
 
-def SpeechRecognition():
-    # Recognising animation shuru
-    rec_frames = [
-        
-        "🎙  Recognising Voice...",
-    ]
-    stop_event, t = run_animation(rec_frames)
-
-    driver.find_element(By.ID, "start").click()
+    try:
+        driver.find_element(By.ID, "start").click()
+    except Exception:
+        stop_animation(stop_ev, anim_t)
+        return ""
 
     while True:
         try:
             text = driver.find_element(By.ID, "output").text.strip()
             if text:
-                stop_animation(stop_event, t)
-                driver.find_element(By.ID, "end").click()
-                if "en" in InputLanguage.lower():
-                    return QueryModifier(text)
-                else:
+                stop_animation(stop_ev, anim_t)
+                try:
+                    driver.find_element(By.ID, "end").click()
+                except Exception:
+                    pass
+
+                # Translate to English if not English input
+                if "en" not in InputLanguage.lower():
                     SetAssistantStatus("Translating...")
-                    return QueryModifier(UniversalTranslator(text))
+                    text = UniversalTranslator(text)
+
+                return QueryModifier(text)
         except Exception:
             pass
         time.sleep(0.1)
