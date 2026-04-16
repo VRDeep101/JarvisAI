@@ -1,82 +1,255 @@
 # ─────────────────────────────────────────────────────────────
-#  TextToSpeech.py  —  Jarvis Voice Output  [FIXED v3]
-#  Fixes:
-#  - Unique temp file per sentence (no pygame file-lock clash)
-#  - IS_SPEAKING flag set BEFORE audio plays
-#  - Natural sentence pauses with ! ? . awareness
-#  - No delay in pipeline (producer starts immediately)
-#  - Win+Shift toggle for internal audio mode
-#  - Overflow lines for long responses
+#  TextToSpeech.py  —  Jarvis Voice  [ULTRA v9 — edge-tts]
+#
+#  WHY edge-tts:
+#    → Microsoft Neural voices (same engine as Azure TTS / ElevenLabs quality)
+#    → 100% FREE, no API key, no limit
+#    → 400+ voices: Indian English, British, American, etc.
+#    → Streamed playback — low latency
+#    → Sounds like a real human, not a robot
+#
+#  VOICES (change VOICE_ID below):
+#    en-US-AndrewNeural      → calm American male (default)
+#    en-US-GuyNeural         → energetic American male
+#    en-US-AriaNeural        → warm American female
+#    en-IN-PrabhatNeural     → Indian English male ← recommended for Jarvis
+#    en-IN-NeerjaExpressiveNeural → Indian English female
+#    en-GB-RyanNeural        → British male (very classy)
+#
+#  3-STATE SYSTEM:
+#    IS_SPEAKING = True  → set BEFORE audio starts
+#    IS_SPEAKING = False → set AFTER pygame fully stops + files deleted
+#    SpeechToText polls _tts.IS_SPEAKING — never overlaps
 # ─────────────────────────────────────────────────────────────
 
-import pygame
-import random
-import soundfile as sf
+import asyncio
 import os
 import re
+import random
 import threading
-import queue
-import keyboard
 import tempfile
-from kokoro_onnx import Kokoro
-from dotenv import dotenv_values
+import time
 
-# ─── Config ───────────────────────────────────────────────────
-_config    = dotenv_values(".env")
-VOICE_ID   = "am_puck"
-BASE_SPEED = 0.88
-LANGUAGE   = "en-us"
+try:
+    import edge_tts
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
+    print("[TTS] ⚠️  edge-tts not installed. Run: pip install edge-tts")
+
+try:
+    import pygame
+    pygame.mixer.pre_init(frequency=22050, size=-16, channels=1, buffer=512)
+    pygame.mixer.init()
+    PYGAME_AVAILABLE = True
+except Exception:
+    PYGAME_AVAILABLE = False
+
+try:
+    import keyboard
+    _KB = True
+except ImportError:
+    _KB = False
+
+# ── Config ────────────────────────────────────────────────────
+VOICE_ID    = "en-US-BrianNeural"   # Change to your preference
+RATE_DEFAULT = "+0%"
+PITCH_DEFAULT = "+0Hz"
 
 os.makedirs("Data", exist_ok=True)
 
-_kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
-
-pygame.mixer.pre_init(frequency=24000, size=-16, channels=1, buffer=256)
-pygame.mixer.init()
-if not pygame.mixer.get_init():
-    print("[TTS ERROR] pygame mixer init FAILED!")
-else:
-    print("[TTS] Audio system ready ✅")
-
-# ─── Global Speaking Flag ─────────────────────────────────────
-IS_SPEAKING          = False
-_internal_audio_mode = False
+# ── IS_SPEAKING: THE CRITICAL FLAG ───────────────────────────
+IS_SPEAKING: bool           = False
+INTERNAL_AUDIO_BLOCKED: bool = True
 
 def _toggle_internal_audio():
-    global _internal_audio_mode
-    _internal_audio_mode = not _internal_audio_mode
-    state = "ON  (internal audio bhi sun raha)" if _internal_audio_mode else "OFF (normal — apni awaaz nahi sunta)"
-    print(f"\n[TTS] Internal-audio mode: {state}\n")
+    global INTERNAL_AUDIO_BLOCKED
+    INTERNAL_AUDIO_BLOCKED = not INTERNAL_AUDIO_BLOCKED
+    print(f"[TTS] Audio: {'UNBLOCKED' if not INTERNAL_AUDIO_BLOCKED else 'BLOCKED'}")
 
-keyboard.add_hotkey("windows+shift", _toggle_internal_audio)
+if _KB:
+    try:
+        keyboard.add_hotkey("windows+shift", _toggle_internal_audio)
+    except Exception:
+        pass
 
-# ─── Overflow Lines ────────────────────────────────────────────
+# ── STT word cache sync ───────────────────────────────────────
+def _register_words_in_stt(text: str) -> None:
+    try:
+        import sys
+        stt = sys.modules.get("Backend.SpeechToText") or sys.modules.get("SpeechToText")
+        if stt and hasattr(stt, "RegisterTTSWords"):
+            stt.RegisterTTSWords(text)
+    except Exception:
+        pass
+
+def _clear_stt_word_cache() -> None:
+    try:
+        import sys
+        stt = sys.modules.get("Backend.SpeechToText") or sys.modules.get("SpeechToText")
+        if stt and hasattr(stt, "ClearTTSWordCache"):
+            stt.ClearTTSWordCache()
+    except Exception:
+        pass
+
+# ── Text Cleaner ──────────────────────────────────────────────
+_FILTER_PREFIXES = ["risky:", "plan:", "note:", "internal:"]
+
+def _clean_for_speech(text: str) -> str:
+    text = re.sub(r'\*+', '', text)
+    text = re.sub(r'#+\s*', '', text)
+    text = re.sub(r'`+', '', text)
+    text = re.sub(r'http\S+', '', text)
+    lines = [l for l in text.split('\n')
+             if not any(l.lower().strip().startswith(p) for p in _FILTER_PREFIXES)]
+    text = ' '.join(lines)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def _split_sentences(text: str) -> list:
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [p.strip() for p in parts if p.strip() and len(p.strip()) > 2]
+
+# ── Core: Generate + Play with edge-tts ──────────────────────
+async def _generate_audio_edge(text: str, rate: str, pitch: str, output_path: str) -> bool:
+    """Generate speech using edge-tts and save to output_path."""
+    try:
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice=VOICE_ID,
+            rate=rate,
+            pitch=pitch,
+        )
+        await communicate.save(output_path)
+        return True
+    except Exception as e:
+        print(f"[TTS] edge-tts error: {e}")
+        return False
+
+def _play_file(filepath: str) -> bool:
+    """Play audio file using pygame."""
+    if not PYGAME_AVAILABLE:
+        return False
+    try:
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(20)
+        pygame.mixer.music.unload()
+        return True
+    except Exception as e:
+        print(f"[TTS] Playback error: {e}")
+        try:
+            pygame.mixer.music.unload()
+        except Exception:
+            pass
+        return False
+
+def speak(text: str, rate: str = "+0%", pitch: str = "+0Hz") -> bool:
+    """
+    Main TTS function. Generates audio with edge-tts and plays it.
+    IS_SPEAKING = True BEFORE anything, False AFTER complete cleanup.
+    """
+    global IS_SPEAKING
+
+    if not EDGE_TTS_AVAILABLE:
+        print(f"[TTS] {text}")
+        return False
+
+    clean = _clean_for_speech(text)
+    if not clean:
+        return False
+
+    # ── RULE 1: Flag True BEFORE everything ─────────────────
+    IS_SPEAKING = True
+    _register_words_in_stt(clean)
+
+    tmp_files = []
+
+    try:
+        sentences = _split_sentences(clean)
+        if not sentences:
+            return False
+
+        for i, sentence in enumerate(sentences):
+            # Generate audio
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                suffix=".mp3", dir="Data", prefix=f"tts_{i}_"
+            )
+            os.close(tmp_fd)
+            tmp_files.append(tmp_path)
+
+            loop = asyncio.new_event_loop()
+            success = loop.run_until_complete(
+                _generate_audio_edge(sentence, rate, pitch, tmp_path)
+            )
+            loop.close()
+
+            if success and os.path.exists(tmp_path):
+                _play_file(tmp_path)
+
+                # Pause between sentences
+                if sentence.strip().endswith('?'):
+                    time.sleep(0.18)
+                elif sentence.strip().endswith('!'):
+                    time.sleep(0.14)
+                else:
+                    time.sleep(0.12)
+
+        return True
+
+    except Exception as e:
+        print(f"[TTS] speak error: {e}")
+        return False
+
+    finally:
+        # ── RULE 2: Full cleanup BEFORE IS_SPEAKING = False ──
+        try:
+            pygame.mixer.music.stop()
+            pygame.mixer.music.unload()
+        except Exception:
+            pass
+
+        for fpath in tmp_files:
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+            except Exception:
+                pass
+
+        _clear_stt_word_cache()
+        IS_SPEAKING = False  # ← Very last thing
+
+# ── Overflow / Pre / Post responses ──────────────────────────
 OVERFLOW_LINES = [
     "The rest is on the screen for you.",
     "Check the chat for the full details.",
-    "I've put the complete details on screen.",
+    "I've put everything on the screen.",
     "Have a look at the screen for more.",
+    "Details are up on the display.",
 ]
 
-# ─── Pre/Post Command Responses ───────────────────────────────
 PRE_TASK_RESPONSES = {
-    "open":         ["Sure, opening {app} for you.", "Alright, launching {app}.", "Opening {app} right away."],
-    "close":        ["Sure, closing {app}.", "Alright, closing {app} now.", "Closing {app} for you."],
-    "play":         ["Sure, playing {song} for you.", "Alright, let me play {song}.", "Playing {song} now."],
-    "volume up":    ["Turning the volume up.", "Sure, volume up.", "Raising the volume for you."],
-    "volume down":  ["Lowering the volume.", "Sure, volume down.", "Reducing the volume for you."],
-    "mute":         ["Muting the audio.", "Sure, muted.", "Audio muted."],
-    "unmute":       ["Unmuting the audio.", "Sure, unmuted.", "Audio is back on."],
-    "google search":["Sure, searching for {query} on Google.", "Looking that up for you.", "Opening Google search for {query}."],
-    "content":      ["Sure, writing content on {topic}.", "On it, creating content for {topic}.", "Writing that content for you."],
-    "default":      ["Sure, on it.", "Alright, working on that.", "Got it, doing that now."],
+    "open":          ["Sure, opening {app} for you.", "Alright, launching {app}.", "Opening {app} right away."],
+    "close":         ["Sure, closing {app}.", "Alright, closing {app} now.", "Closing {app} for you."],
+    "play":          ["Sure, playing {song} for you.", "Playing {song} now.", "Here you go — {song}."],
+    "volume up":     ["Turning the volume up.", "Sure, volume up.", "Cranking it up."],
+    "volume down":   ["Lowering the volume.", "Sure, volume down.", "Bringing it down."],
+    "mute":          ["Muting the audio.", "Muted.", "Going silent."],
+    "unmute":        ["Unmuting.", "Audio is back on.", "You can hear me now."],
+    "google search": ["Sure, searching for {query} on Google.", "Looking that up for you.", "On it — searching now."],
+    "content":       ["Sure, writing content on {topic}.", "Let me write that up.", "Working on it."],
+    "screenshot":    ["Taking a screenshot now.", "Screenshot incoming.", "Captured."],
+    "screen record": ["Starting screen recording.", "Recording your screen now."],
+    "default":       ["Sure, on it.", "Alright, working on that.", "Got it.", "Consider it done.", "Right away."],
 }
 
 POST_TASK_RESPONSES = [
     "Anything else you need?",
     "What would you like to do next?",
-    "Is there anything more I can help with?",
-    "Done. What else can I do for you?",
+    "Done. What else can I help with?",
+    "All good. What's next?",
+    "Task complete. Need anything else?",
 ]
 
 IDLE_PROMPTS = [
@@ -85,6 +258,7 @@ IDLE_PROMPTS = [
     "Should I check something for you?",
     "Want me to search something up?",
     "I'm all ears if you need help.",
+    "Quiet day. Need me to do anything?",
 ]
 
 def get_pre_task_response(task_type: str, **kwargs) -> str:
@@ -101,159 +275,70 @@ def get_post_task_response() -> str:
 def get_idle_prompt() -> str:
     return random.choice(IDLE_PROMPTS)
 
-# ─── Plan/Internal Line Filter ────────────────────────────────
-_FILTER_PREFIXES = ["risky:", "plan:", "note:", "internal:", "step ", "1.", "2.", "3."]
+# ── EQ-aware rate mapping ─────────────────────────────────────
+_RATE_MAP = {
+    "happy":     "+10%",
+    "excited":   "+15%",
+    "sad":       "-12%",
+    "angry":     "-8%",
+    "anxious":   "-10%",
+    "tired":     "-12%",
+    "love":      "-5%",
+    "lonely":    "-10%",
+    "proud":     "+5%",
+    "grateful":  "+3%",
+    "bored":     "+5%",
+    "motivated": "+12%",
+    "neutral":   "+0%",
+}
 
-def _is_filterable(line: str) -> bool:
-    l = line.lower().strip()
-    return any(l.startswith(p) for p in _FILTER_PREFIXES)
+_PITCH_MAP = {
+    "happy":     "+4Hz",
+    "excited":   "+6Hz",
+    "sad":       "-3Hz",
+    "angry":     "-2Hz",
+    "anxious":   "-2Hz",
+    "tired":     "-2Hz",
+    "love":      "+2Hz",
+    "lonely":    "-3Hz",
+    "proud":     "+3Hz",
+    "grateful":  "+1Hz",
+    "bored":     "+1Hz",
+    "motivated": "+4Hz",
+    "neutral":   "+0Hz",
+}
 
-# ─── Text Preprocessor ────────────────────────────────────────
-def _clean_for_speech(text: str) -> str:
-    text = re.sub(r'\*+', '', text)
-    text = re.sub(r'#+\s*', '', text)
-    text = re.sub(r'`+', '', text)
-    text = re.sub(r'http\S+', '', text)
-    lines = [l for l in text.split('\n') if not _is_filterable(l)]
-    text  = ' '.join(lines)
-    text  = re.sub(
-        r'\s+(and|but|so|because|however|though|although|which|who)\s+',
-        r', \1 ', text, flags=re.IGNORECASE
-    )
-    text = re.sub(r'[,]{2,}', ',', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+def get_rate_for_emotion(emotion: str) -> str:
+    return _RATE_MAP.get(emotion, "+0%")
 
-# ─── Sentence Splitter ────────────────────────────────────────
-def _split_sentences(text: str) -> list:
-    parts = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [p.strip() for p in parts if p.strip() and len(p.strip()) > 2]
+def get_pitch_for_emotion(emotion: str) -> str:
+    return _PITCH_MAP.get(emotion, "+0Hz")
 
-# ─── Pause after punctuation ──────────────────────────────────
-def _pause_after(sentence: str) -> float:
-    s = sentence.strip()
-    if s.endswith('?'):
-        return 0.18
-    elif s.endswith('!'):
-        return 0.14
-    elif s.endswith(','):
-        return 0.08
-    return 0.12
-
-# ─── Speed Parser ─────────────────────────────────────────────
-def _parse_rate(rate_str: str) -> float:
-    try:
-        val   = int(re.sub(r'[^-\d]', '', rate_str))
-        speed = BASE_SPEED - (val * 0.003)
-        return max(0.5, min(1.2, speed))
-    except Exception:
-        return BASE_SPEED
-
-# ─── Core Streaming Speak ─────────────────────────────────────
-def speak(text: str, speed: float = None) -> bool:
-    global IS_SPEAKING
-
-    clean     = _clean_for_speech(text)
-    sentences = _split_sentences(clean)
-    if not sentences:
-        return False
-
-    final_speed = speed if speed is not None else BASE_SPEED
-    audio_q     = queue.Queue(maxsize=3)
-    DONE        = object()
-
-    # Set flag BEFORE starting so mic blocks immediately
-    IS_SPEAKING = True
-
-    def producer():
-        for idx, sentence in enumerate(sentences):
-            # Each sentence gets its own unique temp file to avoid lock conflicts
-            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir="Data", prefix=f"tts_{idx}_")
-            os.close(tmp_fd)
-            try:
-                samples, sample_rate = _kokoro.create(
-                    sentence, voice=VOICE_ID, speed=final_speed, lang=LANGUAGE
-                )
-                sf.write(tmp_path, samples, sample_rate)
-                audio_q.put((tmp_path, sentence))
-            except Exception as exc:
-                print(f"[TTS] Gen error sentence {idx}: {exc}")
-                # Clean up the temp file if generation failed
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-        audio_q.put(DONE)
-
-    t = threading.Thread(target=producer, daemon=True)
-    t.start()
-
-    success = True
-    played_files = []
-
-    while True:
-        item = audio_q.get()
-        if item is DONE:
-            break
-        path, sentence = item
-        played_files.append(path)
-        try:
-            if not os.path.exists(path):
-                continue
-            pygame.mixer.music.load(path)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(20)
-            # Unload so file is released before cleanup
-            pygame.mixer.music.unload()
-            # Natural pause based on sentence ending
-            pause_ms = int(_pause_after(sentence) * 1000)
-            pygame.time.wait(pause_ms)
-        except Exception as exc:
-            print(f"[TTS] Playback error: {exc}")
-            success = False
-            break
-
-    try:
-        pygame.mixer.music.stop()
-        pygame.mixer.music.unload()
-    except Exception:
-        pass
-
-    IS_SPEAKING = False
-    t.join(timeout=2)
-
-    # Clean up all temp wav files after playback
-    for fpath in played_files:
-        try:
-            if os.path.exists(fpath):
-                os.remove(fpath)
-        except OSError:
-            pass
-
-    return success
-
-
-# ─── Smart Say ────────────────────────────────────────────────
+# ── Public entry: say() ───────────────────────────────────────
 def say(text: str, rate: str = "+0%", pitch: str = "+0Hz") -> None:
-    speed     = _parse_rate(rate)
+    """
+    Public TTS entry. Long text truncated to 3 sentences + overflow line.
+    """
     sentences = _split_sentences(_clean_for_speech(str(text)))
-    is_long   = len(sentences) > 4 and len(text) >= 250
+    is_long   = len(sentences) > 3 or len(text) >= 200
 
     if is_long:
-        short_text  = ". ".join(s.rstrip('.') for s in sentences[:2])
-        short_text += ". " + random.choice(OVERFLOW_LINES)
-        speak(short_text, speed=speed)
+        short  = ". ".join(s.rstrip('.') for s in sentences[:2])
+        short += ". " + random.choice(OVERFLOW_LINES)
+        speak(short, rate=rate, pitch=pitch)
     else:
-        speak(text, speed=speed)
+        speak(text, rate=rate, pitch=pitch)
 
-
-# ─── Entry Point ──────────────────────────────────────────────
+# ── CLI test ──────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("[ TTS Engine ready ] Type to test. ('exit' to quit)")
-    print("Win+Shift = internal audio mode toggle\n")
+    print("[ Edge-TTS Engine ready — type to test ]")
+    print(f"[ Voice: {VOICE_ID} ]")
     while True:
-        user_input = input(":) ").strip()
+        try:
+            user_input = input(":) ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n👋 Bye.")
+            break
         if user_input.lower() in {"exit", "quit"}:
             break
         if user_input:

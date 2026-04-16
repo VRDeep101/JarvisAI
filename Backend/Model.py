@@ -42,11 +42,17 @@ Rules:
 - No explanation, no extra text.
 - "search X on chrome" or "search X on google" = google search X
 - "open X and search Y" = open X, google search Y
-- "search X on claude" or "open claude and search X" = open claude, google search X
+- "screenshot" or "take screenshot" = system screenshot
+- "screen recording" or "record screen" = system start screen recording
+- "stop recording" = system stop screen recording
+- "bluetooth on/off" = system bluetooth on / system bluetooth off
+- "brightness up/down" = system brightness up / system brightness down
+- "lock screen" = system lock screen
+- "clear chats" or "clear old chats" = general clear old chats
+- "volume up/down/mute" = system volume up / system volume down / system mute
 - Website names like claude.ai, chatgpt.com are opened with open command
 """
 
-# FIX: Zyada examples add kiye — especially chrome/search ke liye
 ChatHistory = [
     {"role": "USER",    "message": "hello how are you"},
     {"role": "CHATBOT", "message": "general hello how are you"},
@@ -63,27 +69,53 @@ ChatHistory = [
     {"role": "USER",    "message": "close whatsapp and telegram"},
     {"role": "CHATBOT", "message": "close whatsapp, close telegram"},
 
-    # FIX: Chrome search examples
     {"role": "USER",    "message": "search python tutorial on chrome"},
     {"role": "CHATBOT", "message": "google search python tutorial"},
 
-    {"role": "USER",    "message": "open chrome and search claude ai"},
-    {"role": "CHATBOT", "message": "open chrome, google search claude ai"},
+    {"role": "USER",    "message": "take a screenshot"},
+    {"role": "CHATBOT", "message": "system screenshot"},
 
-    {"role": "USER",    "message": "search claude on google"},
-    {"role": "CHATBOT", "message": "google search claude"},
+    {"role": "USER",    "message": "start screen recording"},
+    {"role": "CHATBOT", "message": "system start screen recording"},
+
+    {"role": "USER",    "message": "stop screen recording"},
+    {"role": "CHATBOT", "message": "system stop screen recording"},
+
+    {"role": "USER",    "message": "bluetooth on karo"},
+    {"role": "CHATBOT", "message": "system bluetooth on"},
+
+    {"role": "USER",    "message": "bluetooth band karo"},
+    {"role": "CHATBOT", "message": "system bluetooth off"},
+
+    {"role": "USER",    "message": "brightness badhao"},
+    {"role": "CHATBOT", "message": "system brightness up"},
+
+    {"role": "USER",    "message": "brightness kam karo"},
+    {"role": "CHATBOT", "message": "system brightness down"},
+
+    {"role": "USER",    "message": "lock the screen"},
+    {"role": "CHATBOT", "message": "system lock screen"},
+
+    {"role": "USER",    "message": "volume up karo"},
+    {"role": "CHATBOT", "message": "system volume up"},
+
+    {"role": "USER",    "message": "volume down karo"},
+    {"role": "CHATBOT", "message": "system volume down"},
+
+    {"role": "USER",    "message": "mute karo"},
+    {"role": "CHATBOT", "message": "system mute"},
+
+    {"role": "USER",    "message": "generate image of a sunset"},
+    {"role": "CHATBOT", "message": "generate image sunset"},
+
+    {"role": "USER",    "message": "clear old chats"},
+    {"role": "CHATBOT", "message": "general clear old chats"},
 
     {"role": "USER",    "message": "open claude.ai"},
     {"role": "CHATBOT", "message": "open claude.ai"},
 
     {"role": "USER",    "message": "search news today on chrome"},
     {"role": "CHATBOT", "message": "google search news today"},
-
-    {"role": "USER",    "message": "generate image of a sunset"},
-    {"role": "CHATBOT", "message": "generate image sunset"},
-
-    {"role": "USER",    "message": "generate a picture of a dog"},
-    {"role": "CHATBOT", "message": "generate image dog"},
 ]
 
 def Brain(prompt: str):

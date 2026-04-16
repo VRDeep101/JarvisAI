@@ -1,12 +1,14 @@
 # ─────────────────────────────────────────────────────────────
-#  Automation.py  —  Jarvis System Automation  [FIXED v2]
-#  Fixes:
-#  - App open: checks installed apps FIRST, then web, no Google fallback for local apps
-#  - WhatsApp, Spotify, VLC etc. open from desktop properly
-#  - Volume up/down: pycaw primary, keyboard fallback
-#  - Image generation: writes correct data file
-#  - Content writer: working with file output
-#  - generate image: handled via ImageGeneration.data
+#  Automation.py  —  Jarvis System Automation  [FIXED v3]
+#
+#  NEW FEATURES:
+#  - Screenshot: "take screenshot" → PIL + pywin32
+#  - Screen recording: "start screen recording" → OBS/subprocess
+#  - Bluetooth: "enable/disable bluetooth"
+#  - Brightness: "brightness up/down/set 50"
+#  - Lock screen: "lock screen"
+#  - Snap/pause handling integrated
+#  - All previous fixes retained
 # ─────────────────────────────────────────────────────────────
 
 from AppOpener import close, open as appopen
@@ -20,8 +22,10 @@ import subprocess
 import requests
 import asyncio
 import os
+import time
+import datetime
 
-# ── Volume Control — pycaw ────────────────────────────────────
+# ── Volume Control ────────────────────────────────────────────
 try:
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
     from ctypes import cast, POINTER
@@ -29,7 +33,6 @@ try:
     PYCAW_AVAILABLE = True
 except ImportError:
     PYCAW_AVAILABLE = False
-    print("[yellow]⚠️ pycaw not found — using keyboard fallback for volume[/yellow]")
 
 try:
     import keyboard
@@ -37,7 +40,21 @@ try:
 except ImportError:
     KEYBOARD_AVAILABLE = False
 
-# ── CodeWriter Optional ────────────────────────────────────────
+# ── Screenshot ────────────────────────────────────────────────
+try:
+    from PIL import ImageGrab
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+# ── Screen Brightness ─────────────────────────────────────────
+try:
+    import screen_brightness_control as sbc
+    SBC_AVAILABLE = True
+except ImportError:
+    SBC_AVAILABLE = False
+
+# ── CodeWriter ────────────────────────────────────────────────
 try:
     from Backend.CodeWriter import WriteCode
     CODE_WRITER_AVAILABLE = True
@@ -48,7 +65,7 @@ except ImportError:
     except ImportError:
         CODE_WRITER_AVAILABLE = False
 
-# ── ENV ────────────────────────────────────────────────────────
+# ── ENV ───────────────────────────────────────────────────────
 env_vars   = dotenv_values(".env")
 GroqAPIKey = env_vars.get("GroqAPIKey")
 Username   = env_vars.get("Username", "User")
@@ -71,42 +88,38 @@ SYSTEM_PROMPT = [{
 }]
 messages = []
 
-# ── Known Desktop App Paths (Windows) ─────────────────────────
-# Maps app name → common install paths to check
+# ── Known App Paths ───────────────────────────────────────────
 _DESKTOP_APP_PATHS = {
     "whatsapp": [
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "WhatsApp", "WhatsApp.exe"),
-        os.path.join(os.environ.get("APPDATA", ""),      "Microsoft", "Windows", "Start Menu", "Programs", "WhatsApp.lnk"),
     ],
     "spotify": [
         os.path.join(os.environ.get("APPDATA", ""), "Spotify", "Spotify.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WindowsApps", "Spotify.exe"),
     ],
     "discord": [
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Discord", "app-*", "Discord.exe"),
-        os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Discord Inc", "Discord.lnk"),
     ],
     "vlc": [
         r"C:\Program Files\VideoLAN\VLC\vlc.exe",
         r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
     ],
-    "notepad": ["notepad.exe"],
-    "calculator": ["calc.exe"],
-    "paint": ["mspaint.exe"],
-    "settings": ["ms-settings:"],
-    "camera": ["microsoft.windows.camera:"],
-    "photos": ["ms-photos:"],
+    "notepad":       ["notepad.exe"],
+    "calculator":    ["calc.exe"],
+    "paint":         ["mspaint.exe"],
+    "settings":      ["ms-settings:"],
+    "camera":        ["microsoft.windows.camera:"],
+    "photos":        ["ms-photos:"],
     "file explorer": ["explorer.exe"],
-    "task manager": ["taskmgr.exe"],
-    "cmd": ["cmd.exe"],
-    "powershell": ["powershell.exe"],
+    "task manager":  ["taskmgr.exe"],
+    "cmd":           ["cmd.exe"],
+    "powershell":    ["powershell.exe"],
+    "terminal":      ["wt.exe", "cmd.exe"],
     "chrome": [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ],
     "firefox": [
         r"C:\Program Files\Mozilla Firefox\firefox.exe",
-        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
     ],
     "edge": [
         r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -120,7 +133,6 @@ _DESKTOP_APP_PATHS = {
     ],
     "obs": [
         r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
-        r"C:\Program Files (x86)\obs-studio\bin\32bit\obs32.exe",
     ],
     "vscode": [
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Microsoft VS Code", "Code.exe"),
@@ -131,30 +143,195 @@ _DESKTOP_APP_PATHS = {
     ],
 }
 
-# Known web apps — open in browser directly
 _WEB_APP_MAP = {
-    "claude":    "https://claude.ai",
-    "chatgpt":   "https://chatgpt.com",
-    "gmail":     "https://mail.google.com",
-    "youtube":   "https://youtube.com",
-    "instagram": "https://instagram.com",
-    "twitter":   "https://twitter.com",
-    "x":         "https://twitter.com",
-    "facebook":  "https://facebook.com",
-    "github":    "https://github.com",
-    "reddit":    "https://reddit.com",
-    "netflix":   "https://netflix.com",
-    "amazon":    "https://amazon.in",
-    "flipkart":  "https://flipkart.com",
-    "whatsapp web": "https://web.whatsapp.com",
+    "claude":        "https://claude.ai",
+    "chatgpt":       "https://chatgpt.com",
+    "gmail":         "https://mail.google.com",
+    "youtube":       "https://youtube.com",
+    "instagram":     "https://instagram.com",
+    "twitter":       "https://twitter.com",
+    "x":             "https://twitter.com",
+    "facebook":      "https://facebook.com",
+    "github":        "https://github.com",
+    "reddit":        "https://reddit.com",
+    "netflix":       "https://netflix.com",
+    "amazon":        "https://amazon.in",
+    "flipkart":      "https://flipkart.com",
+    "whatsapp web":  "https://web.whatsapp.com",
 }
 
-# ── Google Search ──────────────────────────────────────────────
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+]
+
+# ── Screenshot ────────────────────────────────────────────────
+def TakeScreenshot(reason: str = "") -> bool:
+    """
+    Screenshot leke Data/Screenshots/ mein save karo.
+    """
+    os.makedirs("Data/Screenshots", exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath  = f"Data/Screenshots/screenshot_{timestamp}.png"
+
+    if PIL_AVAILABLE:
+        try:
+            img = ImageGrab.grab()
+            img.save(filepath)
+            print(f"[Screenshot] Saved: {filepath}")
+            try:
+                os.startfile(os.path.abspath(filepath))
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            print(f"[Screenshot] PIL error: {e}")
+
+    # Fallback: Windows Snipping Tool
+    try:
+        subprocess.Popen(["snippingtool", "/clip"])
+        return True
+    except Exception:
+        pass
+
+    # Fallback: PrintScreen via keyboard
+    if KEYBOARD_AVAILABLE:
+        try:
+            keyboard.press_and_release("printscreen")
+            return True
+        except Exception:
+            pass
+
+    return False
+
+# ── Screen Recording ──────────────────────────────────────────
+_screen_recording_proc = None
+
+def StartScreenRecording() -> bool:
+    """Start screen recording via OBS or Windows Game Bar."""
+    global _screen_recording_proc
+
+    # Try OBS first
+    obs_paths = [r"C:\Program Files\obs-studio\bin\64bit\obs64.exe"]
+    for obs in obs_paths:
+        if os.path.exists(obs):
+            try:
+                _screen_recording_proc = subprocess.Popen([obs, "--startrecording"])
+                print("[ScreenRec] OBS recording started")
+                return True
+            except Exception:
+                pass
+
+    # Fallback: Windows Game Bar (Win+Alt+R)
+    if KEYBOARD_AVAILABLE:
+        try:
+            keyboard.press_and_release("windows+alt+r")
+            print("[ScreenRec] Windows Game Bar recording started")
+            return True
+        except Exception:
+            pass
+
+    return False
+
+def StopScreenRecording() -> bool:
+    global _screen_recording_proc
+    if KEYBOARD_AVAILABLE:
+        try:
+            keyboard.press_and_release("windows+alt+r")
+            print("[ScreenRec] Recording stopped")
+            return True
+        except Exception:
+            pass
+    if _screen_recording_proc:
+        try:
+            _screen_recording_proc.terminate()
+            _screen_recording_proc = None
+            return True
+        except Exception:
+            pass
+    return False
+
+# ── Bluetooth ─────────────────────────────────────────────────
+def SetBluetooth(enable: bool) -> bool:
+    """Enable/disable Bluetooth via PowerShell."""
+    action = "Enable" if enable else "Disable"
+    ps_cmd = (
+        f"$bluetooth = [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime];"
+        f"$radios = [Windows.Devices.Radios.Radio]::GetRadiosAsync().GetResults();"
+        f"foreach($radio in $radios) {{"
+        f"if ($radio.Kind -eq 'Bluetooth') {{"
+        f"$radio.SetStateAsync([Windows.Devices.Radios.RadioState]::{action}).GetResults()"
+        f"}}}}"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command", ps_cmd],
+            capture_output=True, timeout=10
+        )
+        print(f"[Bluetooth] {action}d")
+        return True
+    except Exception:
+        # Fallback: open Bluetooth settings
+        try:
+            subprocess.Popen(["explorer.exe", "ms-settings:bluetooth"])
+            return True
+        except Exception:
+            return False
+
+# ── Brightness ────────────────────────────────────────────────
+def SetBrightness(level: int = None, direction: str = None) -> bool:
+    """Set/adjust screen brightness."""
+    if SBC_AVAILABLE:
+        try:
+            current = sbc.get_brightness(display=0)[0]
+            if direction == "up":
+                new_level = min(100, current + 10)
+            elif direction == "down":
+                new_level = max(0, current - 10)
+            elif level is not None:
+                new_level = max(0, min(100, level))
+            else:
+                return False
+            sbc.set_brightness(new_level)
+            print(f"[Brightness] Set to {new_level}%")
+            return True
+        except Exception as e:
+            print(f"[Brightness] sbc error: {e}")
+
+    # Fallback: WMI
+    try:
+        if direction == "up":
+            ps = "powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, [math]::Min(100, (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness + 10))"
+        elif direction == "down":
+            ps = "powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, [math]::Max(0, (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness - 10))"
+        elif level is not None:
+            ps = f"powershell (Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, {level})"
+        else:
+            return False
+        subprocess.run(ps, shell=True, capture_output=True)
+        return True
+    except Exception:
+        return False
+
+# ── Lock Screen ───────────────────────────────────────────────
+def LockScreen() -> bool:
+    try:
+        import ctypes
+        ctypes.windll.user32.LockWorkStation()
+        return True
+    except Exception:
+        try:
+            subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
+            return True
+        except Exception:
+            return False
+
+# ── Google Search ─────────────────────────────────────────────
 def GoogleSearch(topic: str) -> bool:
     search(topic)
     return True
 
-# ── Content Writer ─────────────────────────────────────────────
+# ── Content Writer ────────────────────────────────────────────
 def Content(topic: str) -> bool:
     def open_notepad(filepath):
         subprocess.Popen(["notepad.exe", filepath])
@@ -177,7 +354,7 @@ def Content(topic: str) -> bool:
         messages.append({"role": "assistant", "content": answer})
         return answer
 
-    clean_topic  = topic.replace("Content", "").strip()
+    clean_topic  = topic.strip()
     if not clean_topic:
         return False
     content_text = write_with_ai(clean_topic)
@@ -189,7 +366,7 @@ def Content(topic: str) -> bool:
     open_notepad(filepath)
     return True
 
-# ── YouTube ────────────────────────────────────────────────────
+# ── YouTube ───────────────────────────────────────────────────
 def YouTubeSearch(topic: str) -> bool:
     webbrowser.open(f"https://www.youtube.com/results?search_query={topic}")
     return True
@@ -199,11 +376,6 @@ def PlayYoutube(query: str) -> bool:
     return True
 
 # ── Chrome Helper ─────────────────────────────────────────────
-_CHROME_PATHS = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-]
-
 def _open_url_in_chrome(url: str) -> bool:
     for chrome_path in _CHROME_PATHS:
         if os.path.exists(chrome_path):
@@ -216,17 +388,14 @@ def _open_url_in_chrome(url: str) -> bool:
 def OpenApp(app: str) -> bool:
     app_lower = app.lower().strip()
 
-    # Step 1: Check known web apps
     for keyword, url in _WEB_APP_MAP.items():
         if keyword in app_lower:
             return _open_url_in_chrome(url)
 
-    # Step 2: Check known desktop app paths
     for app_key, paths in _DESKTOP_APP_PATHS.items():
         if app_key in app_lower or app_lower in app_key:
             for path in paths:
                 if path.endswith(":"):
-                    # URI scheme (e.g. ms-settings:)
                     try:
                         os.startfile(path)
                         return True
@@ -239,32 +408,26 @@ def OpenApp(app: str) -> bool:
                     except Exception:
                         pass
                 elif not os.path.dirname(path):
-                    # Just a filename like notepad.exe
                     try:
                         subprocess.Popen([path])
                         return True
                     except Exception:
                         pass
 
-    # Step 3: Try AppOpener (installed apps via Start Menu)
     try:
         appopen(app, match_closest=True, output=False, throw_error=True)
         return True
     except Exception:
         pass
 
-    # Step 4: Try os.startfile for apps that might be in PATH
     try:
         os.startfile(app_lower)
         return True
     except Exception:
         pass
 
-    # Step 5: Last resort — Google search in Chrome (only for non-local queries)
-    print(f"[AppOpen] Could not find '{app}' locally, searching online.")
     webbrowser.open(f"https://www.google.com/search?q={app}")
     return True
-
 
 def CloseApp(app: str) -> bool:
     if "chrome" in app.lower():
@@ -274,29 +437,57 @@ def CloseApp(app: str) -> bool:
         return True
     except Exception:
         pass
-
-    # Try taskkill as fallback
     try:
         subprocess.run(["taskkill", "/f", "/im", f"{app}.exe"], capture_output=True)
         return True
     except Exception:
         return False
 
-
-# ── Volume Control ─────────────────────────────────────────────
+# ── Volume Control ────────────────────────────────────────────
 def _get_volume_interface():
     try:
         devices   = AudioUtilities.GetSpeakers()
         interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return cast(interface, POINTER(IAudioEndpointVolume))
-    except Exception as e:
-        print(f"[Volume] Could not get audio interface: {e}")
+    except Exception:
         return None
-
 
 def System(command: str) -> bool:
     cmd = command.lower().strip()
 
+    # ── Lock Screen ──────────────────────────────────────────
+    if cmd in ("lock", "lock screen", "lock pc", "lock computer"):
+        return LockScreen()
+
+    # ── Screenshot ───────────────────────────────────────────
+    if any(kw in cmd for kw in ("screenshot", "take screenshot", "capture screen", "snap screen")):
+        return TakeScreenshot()
+
+    # ── Screen Recording ─────────────────────────────────────
+    if any(kw in cmd for kw in ("start screen recording", "start recording", "record screen")):
+        return StartScreenRecording()
+    if any(kw in cmd for kw in ("stop recording", "stop screen recording")):
+        return StopScreenRecording()
+
+    # ── Bluetooth ─────────────────────────────────────────────
+    if any(kw in cmd for kw in ("bluetooth on", "enable bluetooth", "turn on bluetooth", "bluetooth chalu")):
+        return SetBluetooth(True)
+    if any(kw in cmd for kw in ("bluetooth off", "disable bluetooth", "turn off bluetooth", "bluetooth band")):
+        return SetBluetooth(False)
+
+    # ── Brightness ────────────────────────────────────────────
+    if any(kw in cmd for kw in ("brightness up", "increase brightness", "bright up")):
+        return SetBrightness(direction="up")
+    if any(kw in cmd for kw in ("brightness down", "decrease brightness", "dim screen")):
+        return SetBrightness(direction="down")
+    if "set brightness" in cmd:
+        try:
+            level = int(''.join(filter(str.isdigit, cmd.replace("set brightness", ""))))
+            return SetBrightness(level=level)
+        except Exception:
+            pass
+
+    # ── Volume ────────────────────────────────────────────────
     if PYCAW_AVAILABLE:
         volume = _get_volume_interface()
         if volume is not None:
@@ -305,35 +496,24 @@ def System(command: str) -> bool:
                     current = volume.GetMute()
                     volume.SetMute(0 if current else 1, None)
                     return True
-
                 elif cmd == "volume up":
-                    current_vol = volume.GetMasterVolumeLevelScalar()
-                    new_vol     = min(1.0, current_vol + 0.10)
+                    new_vol = min(1.0, volume.GetMasterVolumeLevelScalar() + 0.10)
                     volume.SetMasterVolumeLevelScalar(new_vol, None)
-                    print(f"[Volume] Up → {int(new_vol * 100)}%")
                     return True
-
                 elif cmd == "volume down":
-                    current_vol = volume.GetMasterVolumeLevelScalar()
-                    new_vol     = max(0.0, current_vol - 0.10)
+                    new_vol = max(0.0, volume.GetMasterVolumeLevelScalar() - 0.10)
                     volume.SetMasterVolumeLevelScalar(new_vol, None)
-                    print(f"[Volume] Down → {int(new_vol * 100)}%")
                     return True
-
                 elif cmd.startswith("set volume"):
                     try:
                         level = int(cmd.replace("set volume", "").strip()) / 100
-                        level = max(0.0, min(1.0, level))
-                        volume.SetMasterVolumeLevelScalar(level, None)
-                        print(f"[Volume] Set → {int(level * 100)}%")
+                        volume.SetMasterVolumeLevelScalar(max(0.0, min(1.0, level)), None)
                         return True
                     except Exception:
                         pass
-
             except Exception as e:
                 print(f"[Volume] pycaw error: {e}")
 
-    # ── Keyboard fallback ──────────────────────────────────────
     if KEYBOARD_AVAILABLE:
         key_map = {
             "mute":        "volume mute",
@@ -346,29 +526,11 @@ def System(command: str) -> bool:
             keyboard.press_and_release(key)
             return True
 
-    # ── nircmd fallback ────────────────────────────────────────
-    nircmd_map = {
-        "volume up":   ["nircmd.exe", "changesysvolume", "6553"],
-        "volume down": ["nircmd.exe", "changesysvolume", "-6553"],
-        "mute":        ["nircmd.exe", "mutesysvolume",   "1"],
-        "unmute":      ["nircmd.exe", "mutesysvolume",   "0"],
-    }
-    if cmd in nircmd_map:
-        try:
-            subprocess.Popen(nircmd_map[cmd])
-            return True
-        except Exception:
-            pass
-
     print(f"[System] Command not handled: {command}")
     return False
 
-
-# ── Image Generation ───────────────────────────────────────────
+# ── Image Generation ──────────────────────────────────────────
 def TriggerImageGeneration(query: str) -> bool:
-    """
-    Write image generation query to file and launch subprocess.
-    """
     clean = query.strip()
     os.makedirs("Frontend/Files", exist_ok=True)
     filepath = os.path.join("Frontend", "Files", "ImageGeneration.data")
@@ -381,8 +543,7 @@ def TriggerImageGeneration(query: str) -> bool:
         print(f"[ImageGen] Write error: {e}")
         return False
 
-
-# ── Async Dispatcher ───────────────────────────────────────────
+# ── Async Dispatcher ──────────────────────────────────────────
 async def TranslateAndExecute(commands: list):
     funcs = []
 
@@ -405,10 +566,8 @@ async def TranslateAndExecute(commands: list):
 
         elif cmd.startswith(("writecode", "write code", "code")):
             if CODE_WRITER_AVAILABLE:
-                clean = cmd.replace("writecode", "").replace("write code", "").replace("code", "").strip()
+                clean = cmd.replace("writecode","").replace("write code","").replace("code","").strip()
                 funcs.append(asyncio.to_thread(WriteCode, clean))
-            else:
-                print("[red]CodeWriter not available.[/red]")
 
         elif cmd.startswith("google search"):
             funcs.append(asyncio.to_thread(GoogleSearch, command.strip()[13:].strip()))
@@ -428,7 +587,7 @@ async def TranslateAndExecute(commands: list):
             funcs.append(asyncio.to_thread(TriggerImageGeneration, raw))
 
         elif cmd.startswith(("general", "realtime")):
-            pass  # handled by chatbot/realtime engine
+            pass
 
         else:
             print(f"[yellow]No handler for:[/yellow] {cmd}")

@@ -1,17 +1,97 @@
-python-dotenv
-groq
-AppOpener
-pywhatkit
-bs4
-pillow
-rich
-requests
-keyboard
-cohere
-googlesearch-python
-selenium
-mtranslate
-pygame
-edge-tts
-PyQt5
-webdriver-manager
+# ═══════════════════════════════════════════════════════════
+#  Requirements.txt  —  Jarvis AI Assistant
+#  Python 3.10 / 3.11 / 3.12 compatible
+#  Last updated: 2025
+#
+#  INSTALL: pip install -r Requirements.txt
+#           (If error: pip install -r Requirements.txt --break-system-packages)
+# ═══════════════════════════════════════════════════════════
+
+# ── Core AI / LLM ─────────────────────────────────────────────
+groq                         # Groq API client (LLaMA 3.3-70b-versatile)
+cohere                       # Cohere Command-R (routing/decision brain)
+python-dotenv                # .env file loading
+
+# ── Voice Output (TTS) ────────────────────────────────────────
+edge-tts                     # Microsoft Neural TTS (FREE, human-like, 400+ voices)
+pygame                       # Audio playback engine
+soundfile                    # WAV/audio file handling
+
+# ── Voice Input (STT) ─────────────────────────────────────────
+selenium                     # Chrome browser control for Web Speech API
+webdriver-manager            # Auto ChromeDriver management
+mtranslate                   # Auto-translation (any language → English)
+requests                     # HTTP requests
+
+# ── GUI ───────────────────────────────────────────────────────
+PyQt5                        # Main GUI framework
+PyQt5-sip                    # PyQt5 dependency
+
+# ── Web Search / Real-Time ────────────────────────────────────
+duckduckgo-search            # Free DuckDuckGo search (no API key)
+wikipedia                    # Wikipedia article summaries (FREE)
+beautifulsoup4               # HTML parsing
+lxml                         # Fast XML/HTML parser (bs4 dependency)
+
+# ── Automation ────────────────────────────────────────────────
+AppOpener                    # Open/close apps by name
+pywhatkit                    # YouTube play, WhatsApp, Google search helpers
+webbrowser                   # Built-in (no install needed)
+keyboard                     # Global hotkeys + keyboard simulation
+pyautogui                    # Mouse + keyboard automation
+screen-brightness-control    # Screen brightness control
+
+# ── Windows System Access ─────────────────────────────────────
+pycaw                        # Windows audio volume control
+comtypes                     # COM interface (pycaw dependency)
+pywin32                      # Windows API (screenshots, system calls)
+win11toast                   # Windows 11 toast notifications (optional)
+plyer                        # Cross-platform notifications (fallback)
+psutil                       # Process/system monitoring
+
+# ── Memory / Data ─────────────────────────────────────────────
+# json, os, re, datetime → built-in, no install needed
+
+# ── Image Generation ──────────────────────────────────────────
+huggingface-hub              # Hugging Face model hub client
+Pillow                       # Image loading/saving (PIL)
+
+# ── Content / Code Writing ────────────────────────────────────
+rich                         # Beautiful terminal output
+
+# ── Optional: Better TTS (Kokoro — keep as fallback) ─────────
+# kokoro-onnx                # Keep installed if you had it
+# onnxruntime                # Kokoro dependency
+
+# ══════════════════════════════════════════════════════════════
+#  MANUAL INSTALLS (not on PyPI — install separately)
+# ══════════════════════════════════════════════════════════════
+
+# kokoro TTS (if you want to keep it):
+# pip install kokoro-onnx onnxruntime
+# Download models: kokoro-v1.0.onnx + voices-v1.0.bin from HuggingFace
+
+# ══════════════════════════════════════════════════════════════
+#  VOICE MODELS AVAILABLE (edge-tts — all FREE):
+# ══════════════════════════════════════════════════════════════
+#  en-IN-PrabhatNeural        ← Indian English male (RECOMMENDED for Jarvis)
+#  en-IN-NeerjaExpressiveNeural ← Indian English female
+#  en-US-AndrewNeural         ← American male, calm
+#  en-US-GuyNeural            ← American male, energetic
+#  en-US-AriaNeural           ← American female, warm
+#  en-GB-RyanNeural           ← British male, classy
+#  en-GB-SoniaNeural          ← British female
+#
+#  List all voices: edge-tts --list-voices
+# ══════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════
+#  API KEYS NEEDED (.env file):
+# ══════════════════════════════════════════════════════════════
+#  GroqAPIKey=       → https://console.groq.com (FREE, LLaMA 3.3-70b)
+#  CohereAPIKey=     → https://cohere.com (FREE tier: command-a-03-2025)
+#  HuggingFaceAPIKey= → https://huggingface.co (FREE, image generation)
+#  Username=
+#  Assistantname=Jarvis
+#  InputLanguage=en-IN
+# ══════════════════════════════════════════════════════════════

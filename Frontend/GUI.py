@@ -19,7 +19,7 @@ import random
 import time
 
 env_vars      = dotenv_values(".env")
-Assistantname = env_vars.get("Assistantname", "Jarvis")
+Assistantname = env_vars.get("AssistantName", env_vars.get("Assistantname", "Jarvis"))
 current_dir   = os.getcwd()
 old_chat_message = ""
 
@@ -28,6 +28,7 @@ GraphicsDirPath = os.path.join(current_dir, "Frontend", "Graphics")
 
 # Ensure directories exist
 os.makedirs(TempDirPath, exist_ok=True)
+os.makedirs(GraphicsDirPath, exist_ok=True)
 
 
 # ── Safe File Helpers (PermissionError fix) ───────────────────
@@ -123,7 +124,7 @@ def ShowTextToScreen(Text: str) -> None:
 
 
 # ── Initialize data files if missing ──────────────────────────
-for _fname in ["Mic.data", "Status.data", "Responses.data", "Database.data"]:
+for _fname in ["Mic.data", "Status.data", "Responses.data", "Database.data", "ImageGeneration.data"]:
     _fpath = os.path.join(TempDirPath, _fname)
     if not os.path.exists(_fpath):
         _safe_write(_fpath, "")
@@ -514,11 +515,14 @@ class InitialScreen(QWidget):
         painter.end()
 
     def SpeechRecogText(self):
-        # FIXED: safe read — no PermissionError crash
         messages = _safe_read(TempDirectoryPath('Status.data'))
         self.label.setText(messages)
 
     def load_icon(self, path, width=40, height=40):
+        if not os.path.exists(path):
+            # Create a placeholder colored circle if icon missing
+            self.icon_label.setText("🎤")
+            return
         pixmap     = QPixmap(path)
         new_pixmap = pixmap.scaled(width, height,
                                    Qt.KeepAspectRatio,
@@ -560,13 +564,18 @@ class ChatSection(QWidget):
         text_color_text.setForeground(text_color)
         self.chat_text_edit.setCurrentCharFormat(text_color_text)
 
+        # GIF — only load if file exists
         self.gif_label = QLabel()
         self.gif_label.setStyleSheet("border: none;")
-        movie = QMovie(GraphicsDirectoryPath('Jarvis.gif'))
-        movie.setScaledSize(QSize(480, 270))
-        self.gif_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
-        self.gif_label.setMovie(movie)
-        movie.start()
+        gif_path = GraphicsDirectoryPath('Jarvis.gif')
+        if os.path.exists(gif_path):
+            movie = QMovie(gif_path)
+            movie.setScaledSize(QSize(480, 270))
+            self.gif_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
+            self.gif_label.setMovie(movie)
+            movie.start()
+        else:
+            self.gif_label.setText("")
         layout.addWidget(self.gif_label)
 
         self.label = QLabel("")
@@ -613,7 +622,6 @@ background: none;
 
     def loadMessages(self):
         global old_chat_message
-        # FIXED: safe read
         messages = _safe_read(TempDirectoryPath('Responses.data'))
         if not messages or len(messages) <= 1:
             return
@@ -623,7 +631,6 @@ background: none;
         old_chat_message = messages
 
     def SpeechRecogText(self):
-        # FIXED: safe read
         messages = _safe_read(TempDirectoryPath('Status.data'))
         self.label.setText(messages)
 
@@ -692,8 +699,10 @@ class CustomTopBar(QWidget):
 
         def nav_btn(icon_path, text):
             btn = QPushButton(f"  {text}")
-            btn.setIcon(QIcon(GraphicsDirectoryPath(icon_path)))
-            btn.setIconSize(QSize(18, 18))
+            icon_full = GraphicsDirectoryPath(icon_path)
+            if os.path.exists(icon_full):
+                btn.setIcon(QIcon(icon_full))
+                btn.setIconSize(QSize(18, 18))
             btn.setFixedHeight(34)
             btn.setStyleSheet("""
                 QPushButton {
@@ -731,8 +740,10 @@ class CustomTopBar(QWidget):
 
         def ctrl_btn(icon_path, hover_color="#0a2040"):
             btn = QPushButton()
-            btn.setIcon(QIcon(GraphicsDirectoryPath(icon_path)))
-            btn.setIconSize(QSize(16, 16))
+            icon_full = GraphicsDirectoryPath(icon_path)
+            if os.path.exists(icon_full):
+                btn.setIcon(QIcon(icon_full))
+                btn.setIconSize(QSize(16, 16))
             btn.setFixedSize(36, 36)
             btn.setStyleSheet(f"""
                 QPushButton {{

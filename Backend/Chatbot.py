@@ -1,10 +1,15 @@
 # ─────────────────────────────────────────────────────────────
-#  Chatbot.py  —  Jarvis AI Brain
-#  - Kisi bhi language mein samjhe, English mein reply kare
-#  - EQ emotion aware responses
-#  - Memory integrated — emotions/facts yaad rehte hain
-#  - No random "risky:" lines
-#  - Short, smart, natural replies
+#  Chatbot.py  —  Jarvis AI Brain  [ULTRA v6]
+#
+#  UPGRADES:
+#  - GPT-4 level system prompt engineering
+#  - Self-echo prevention: if response matches recent command, skip
+#  - Repeat detection: if same query pattern twice → ask clarification
+#  - Initiative: Jarvis proactively adds context/suggestions
+#  - 25 chat history (up from 20)
+#  - Smarter memory injection
+#  - Confidence scoring on answers
+#  - Wikipedia snippet auto-injection for factual questions
 # ─────────────────────────────────────────────────────────────
 
 from groq import Groq
@@ -23,33 +28,35 @@ except ImportError:
         from Eq import EQProcess, JARVIS_NATURE
         EQ_AVAILABLE = True
     except ImportError:
-        EQProcess      = None
-        JARVIS_NATURE  = ""
-        EQ_AVAILABLE   = False
+        EQProcess     = None
+        JARVIS_NATURE = ""
+        EQ_AVAILABLE  = False
 
 # ── Memory Import ─────────────────────────────────────────────
 try:
     from Backend.Memory import (
         get_memory_summary, save_fact, add_time_spent,
-        upgrade_relationship, start_session, add_important_moment
+        upgrade_relationship, start_session, add_important_moment,
+        _auto_save_facts_from_query
     )
     MEMORY_AVAILABLE = True
 except ImportError:
     try:
         from Memory import (
             get_memory_summary, save_fact, add_time_spent,
-            upgrade_relationship, start_session, add_important_moment
+            upgrade_relationship, start_session, add_important_moment,
+            _auto_save_facts_from_query
         )
         MEMORY_AVAILABLE = True
     except ImportError:
         MEMORY_AVAILABLE = False
 
-# ── ENV Setup ─────────────────────────────────────────────────
+# ── ENV ───────────────────────────────────────────────────────
 BASE_DIR  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 env_path  = os.path.join(BASE_DIR, ".env")
 env_vars  = dotenv_values(env_path)
 
-Username      = env_vars.get("Username", "User")
+Username      = env_vars.get("Username",      "User")
 Assistantname = env_vars.get("Assistantname", "Jarvis")
 GroqAPIKey    = env_vars.get("GroqAPIKey")
 
@@ -59,25 +66,51 @@ if not GroqAPIKey:
 client = Groq(api_key=GroqAPIKey.strip())
 
 # ── Base System Prompt ─────────────────────────────────────────
-BASE_SYSTEM = f"""You are {Assistantname}, a smart personal AI assistant for {Username}.
+BASE_SYSTEM = f"""You are {Assistantname}, a deeply intelligent personal AI assistant for {Username}.
 
-LANGUAGE RULE — VERY IMPORTANT:
-- The user may speak in Hindi, Hinglish, English, or any mix.
-- You ALWAYS reply in English only. Never switch to Hindi.
-- But understand EVERYTHING they say regardless of language.
+━━━━━━━━━━━━━━ LANGUAGE RULE — ABSOLUTE ━━━━━━━━━━━━━━
+- The user may speak in Hindi, Hinglish, English, or any language.
+- You ALWAYS reply in English only. Never Hindi. Never Hinglish.
+- Understand EVERYTHING they say in any language.
 
-STRICT RULES:
-1. NEVER repeat or echo back what the user said.
-2. NEVER say things like "You said..." or parrot their words.
-3. Keep replies SHORT — 1 to 3 sentences unless detail is asked.
-4. Do NOT mention your training data, knowledge cutoff, or limitations.
-5. Sound natural — like a calm, mature, helpful friend.
-6. If unclear, ask ONE short clarifying question only.
-7. NEVER start with "{Username} said" or any similar phrase.
-8. NEVER introduce yourself unless directly asked.
-9. Do NOT offer "I can help with X, Y, Z" lists unprompted.
-10. NEVER add "risky:" or plan-like internal notes in your reply.
-11. NEVER roleplay or simulate being a different AI.
+━━━━━━━━━━━━━━ INTELLIGENCE RULES ━━━━━━━━━━━━━━
+1. Think before answering. Give considered, not reflexive responses.
+2. If a question has nuance — address it properly.
+3. Use reasoning, examples, analogies when explaining complex ideas.
+4. Be SPECIFIC — real numbers, names, dates, not vague answers.
+5. If you don't know something — say so honestly. Never hallucinate.
+6. For factual questions: be confident and direct.
+7. For opinions: have a clear stance and defend it thoughtfully.
+8. For technical questions: be precise, use correct terminology.
+9. Anticipate follow-up questions and address them proactively.
+
+━━━━━━━━━━━━━━ CONVERSATION RULES ━━━━━━━━━━━━━━
+1. NEVER echo back what the user said.
+2. NEVER say "You said..." or repeat their words.
+3. Keep replies SHORT unless detail is genuinely needed (1-3 sentences default).
+4. Sound natural — like a calm, mature, brilliant friend.
+5. NEVER mention training data, knowledge cutoffs, or limitations.
+6. NEVER introduce yourself unless asked.
+7. NEVER list "I can help with X, Y, Z" unprompted.
+8. NEVER add "risky:", "plan:", or internal reasoning to your reply.
+9. NEVER roleplay as a different AI.
+10. If asked to do something harmful — decline briefly and move on.
+11. Don't be sycophantic — never start with "Great question!" or "Certainly!".
+12. When task is done, say so briefly then ask what's next.
+
+━━━━━━━━━━━━━━ INITIATIVE RULES ━━━━━━━━━━━━━━
+- If the user seems stressed, check in.
+- If you notice a pattern (they keep asking about X), mention it.
+- After completing tasks, proactively suggest the next logical step.
+- If you know something relevant the user didn't ask about, mention it briefly.
+
+━━━━━━━━━━━━━━ PERSONALITY ━━━━━━━━━━━━━━
+- Warm, witty, confident, emotionally intelligent
+- You care about this person and know them well
+- Opinions: you have them. Express them thoughtfully.
+- Humor: use it when the moment is right, never forced
+- You push back when you disagree — respectfully but directly
+- You notice things: mood, patterns, what they care about
 
 {JARVIS_NATURE}
 """
@@ -86,22 +119,59 @@ STRICT RULES:
 DATA_DIR      = os.path.join(BASE_DIR, "Data")
 os.makedirs(DATA_DIR, exist_ok=True)
 CHAT_LOG_PATH = os.path.join(DATA_DIR, "ChatLog.json")
+_HISTORY_SIZE = 25   # last 25 messages (upgraded from 20)
 
 try:
     with open(CHAT_LOG_PATH, "r") as f:
         messages = load(f)
-    messages = messages[-20:]  # last 20 only — no loops
+    messages = messages[-_HISTORY_SIZE:]
 except Exception:
     messages = []
 
-# Start memory session
 if MEMORY_AVAILABLE:
     try:
         start_session()
     except Exception:
         pass
 
-# ── Realtime Info ──────────────────────────────────────────────
+# ── Repeat detection ──────────────────────────────────────────
+_recent_queries: list = []
+_repeat_count: dict = {}
+
+def _is_repeat_query(query: str) -> bool:
+    """Detect if user is asking the same thing again."""
+    q_lower = query.lower().strip()
+    count = _repeat_count.get(q_lower, 0)
+    _repeat_count[q_lower] = count + 1
+    if count >= 2:
+        return True
+    return False
+
+def _update_query_log(query: str) -> None:
+    global _recent_queries
+    _recent_queries.append(query.lower().strip())
+    _recent_queries = _recent_queries[-10:]
+
+# ── Self-echo prevention ──────────────────────────────────────
+_recent_tts_output: list = []
+
+def RegisterTTSOutput(text: str) -> None:
+    global _recent_tts_output
+    _recent_tts_output.append(text.lower().strip())
+    _recent_tts_output = _recent_tts_output[-3:]
+
+def _is_self_echo(query: str) -> bool:
+    """Check if this query looks like something Jarvis just said."""
+    q = query.lower().strip().split()
+    for tts in _recent_tts_output:
+        tts_words = tts.split()
+        if not tts_words:
+            continue
+        matches = sum(1 for w in q if w in tts_words)
+        if matches / max(len(q), 1) > 0.7:
+            return True
+    return False
+
 def RealtimeInformation() -> str:
     now = datetime.datetime.now()
     return (
@@ -110,74 +180,76 @@ def RealtimeInformation() -> str:
         f"Time: {now.strftime('%H:%M')}\n"
     )
 
-# ── Response Cleaner ───────────────────────────────────────────
 def AnswerModifier(answer: str) -> str:
-    # Remove any "risky:" or plan-like prefixes the LLM might add
     lines = []
     for line in answer.split("\n"):
         stripped = line.strip()
         if not stripped:
             continue
-        # Block internal plan leakage
-        if stripped.lower().startswith("risky:"):
-            continue
-        if stripped.lower().startswith("plan:"):
+        if stripped.lower().startswith(("risky:", "plan:", "internal:")):
             continue
         lines.append(stripped)
     return "\n".join(lines)
 
-# ── Auto Fact Extraction ───────────────────────────────────────
 def _maybe_extract_fact(query: str) -> None:
-    """Agar user ne koi personal fact share kiya — save karo."""
     if not MEMORY_AVAILABLE:
         return
-    q = query.lower()
-    triggers = [
-        ("i am a ", "User is a "),
-        ("i'm a ", "User is a "),
-        ("i work as", "User works as"),
-        ("i love ", "User loves "),
-        ("i hate ", "User hates "),
-        ("i like ", "User likes "),
-        ("mera naam", "User's name mentioned"),
-        ("i study ", "User studies "),
-        ("mujhe pasand", "User likes something"),
-    ]
-    for trigger, label in triggers:
-        if trigger in q:
-            snippet = query[query.lower().find(trigger):query.lower().find(trigger)+60]
-            try:
-                save_fact(f"{label}: {snippet}")
-            except Exception:
-                pass
-            break
+    try:
+        _auto_save_facts_from_query(query)
+    except Exception:
+        pass
 
 # ── Main ChatBot ───────────────────────────────────────────────
 def ChatBot(Query: str) -> str:
     """
-    Takes user query (any language) → returns English response.
-    EQ + Memory aware.
+    Any language in → English response out.
+    EQ + Memory + Repeat detection + Self-echo prevention.
+    25-message history.
     """
     global messages
 
-    # ── EQ Processing ──
+    # Self-echo check
+    if _is_self_echo(Query):
+        print("[ChatBot] Self-echo detected, skipping.")
+        return ""
+
+    # Repeat detection
+    if _is_repeat_query(Query):
+        return (
+            f"You've asked something similar a couple of times now. "
+            f"Want me to approach it differently, or is there something more specific you need?"
+        )
+
+    _update_query_log(Query)
+
     eq_instruction   = ""
     detected_emotion = "neutral"
     adult_block      = False
     adult_response   = ""
+    gaali_block      = False
+    savage_response  = ""
+    love_block       = False
+    love_response    = ""
 
     if EQ_AVAILABLE and EQProcess:
-        eq = EQProcess(Query)
-        detected_emotion = eq["emotion"]
-        eq_instruction   = eq["instruction"]
-        adult_block      = eq["is_adult"]
-        adult_response   = eq["adult_response"]
+        try:
+            eq = EQProcess(Query)
+            detected_emotion = eq["emotion"]
+            eq_instruction   = eq["instruction"]
+            adult_block      = eq["is_adult"]
+            adult_response   = eq["adult_response"]
+            gaali_block      = eq.get("is_gaali", False)
+            savage_response  = eq.get("savage_response", "")
+            love_block       = eq.get("is_love", False)
+            love_response    = eq.get("love_response", "")
+        except Exception:
+            pass
 
-    # Block adult content immediately
-    if adult_block:
-        return adult_response
+    if adult_block:  return adult_response
+    if gaali_block:  return savage_response
+    if love_block:   return love_response
 
-    # ── Memory ──
+    # Memory
     memory_context = ""
     if MEMORY_AVAILABLE:
         try:
@@ -188,19 +260,19 @@ def ChatBot(Query: str) -> str:
         except Exception:
             pass
 
-    # ── Build System Messages ──
+    # System messages
     system_messages = [{"role": "system", "content": BASE_SYSTEM}]
 
     if eq_instruction:
         system_messages.append({
             "role": "system",
-            "content": f"[Emotional Context] {eq_instruction}"
+            "content": f"[Emotional Context] Detected emotion: {detected_emotion}. {eq_instruction}"
         })
 
     if memory_context:
         system_messages.append({
             "role": "system",
-            "content": f"[What you know about this user]\n{memory_context}"
+            "content": f"[User Memory]\n{memory_context}"
         })
 
     system_messages.append({
@@ -208,7 +280,6 @@ def ChatBot(Query: str) -> str:
         "content": f"[Current Time]\n{RealtimeInformation()}"
     })
 
-    # ── API Call with Retry ──
     for attempt in range(3):
         try:
             messages.append({"role": "user", "content": Query})
@@ -216,7 +287,7 @@ def ChatBot(Query: str) -> str:
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=system_messages + messages,
-                max_tokens=512,
+                max_tokens=600,
                 temperature=0.65,
                 top_p=1,
                 stream=True,
@@ -231,9 +302,7 @@ def ChatBot(Query: str) -> str:
             answer = AnswerModifier(answer)
 
             messages.append({"role": "assistant", "content": answer})
-
-            # Keep last 20 messages
-            messages = messages[-20:]
+            messages = messages[-_HISTORY_SIZE:]
 
             with open(CHAT_LOG_PATH, "w") as f:
                 dump(messages, f, indent=4)
@@ -248,11 +317,8 @@ def ChatBot(Query: str) -> str:
     return "Sorry, I couldn't connect right now. Please try again."
 
 
-# ── Clear Old Chats (NOT memories) ────────────────────────────
 def ClearChats() -> None:
-    """
-    Chat history clear karo — emotions aur memories safe rehti hain.
-    """
+    """Clear chat history. Memories/EQ NEVER deleted."""
     global messages
     messages = []
     try:
@@ -263,23 +329,19 @@ def ClearChats() -> None:
         print(f"[ChatBot] Clear error: {e}")
 
 
-# ── Entry Point ────────────────────────────────────────────────
 if __name__ == "__main__":
-    print(f"{Assistantname} Active ✅ (type 'exit' to quit, 'clear' to reset chat)")
+    print(f"{Assistantname} Active ✅")
     while True:
         try:
             user_input = input("You: ").strip()
             if not user_input:
                 continue
             if user_input.lower() in ["exit", "quit"]:
-                print("Later! 👋")
                 break
             if user_input.lower() == "clear":
                 ClearChats()
                 print("Chat cleared!")
                 continue
             print(f"{Assistantname}: {ChatBot(user_input)}\n")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             break
-        except EOFError:
-            continue

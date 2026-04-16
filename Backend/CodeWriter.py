@@ -148,6 +148,6 @@ def WriteCode(topic: str) -> bool:
     return True
 
 
-# ── Quick test ─────────────────────────────────────────────────────────────────
-# if __name__ == "__main__":
-  #  WriteCode("Test")
+
+if __name__ == "__main__":
+   WriteCode("")
