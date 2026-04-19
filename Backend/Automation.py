@@ -25,6 +25,13 @@ import os
 import time
 import datetime
 
+# ── AIWebBrowser ──────────────────────────────────────────────
+try:
+    from Backend.AIWebBrowser import ask_ai_website, route_query, get_pre_message
+    AI_WEB_AVAILABLE = True
+except ImportError:
+    AI_WEB_AVAILABLE = False
+
 # ── Volume Control ────────────────────────────────────────────
 try:
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -325,6 +332,61 @@ def LockScreen() -> bool:
             return True
         except Exception:
             return False
+        
+# ── Ask AI Website ────────────────────────────────────────────
+def AskAIWebsite(query: str, preferred_ai: str = None) -> bool:
+    """
+    Claude / ChatGPT / Gemini website khole, query bheje, response bole.
+    Code ke liye Claude, content/image ke liye ChatGPT, backup Gemini.
+    """
+    if not AI_WEB_AVAILABLE:
+        print("[AskAI] Install karo: pip install selenium webdriver-manager")
+        return False
+
+    # Lazy imports (circular import avoid karne ke liye)
+    try:
+        from Frontend.GUI         import ShowTextToScreen
+        from Backend.TextToSpeech import say as _TTS
+        from dotenv               import dotenv_values as _dv
+        _aname = _dv(".env").get("Assistantname", "Jarvis")
+    except Exception:
+        ShowTextToScreen = lambda x: print(x)
+        _TTS             = lambda x, **kw: None
+        _aname           = "Jarvis"
+
+    def _say_and_show(msg: str):
+        try:
+            ShowTextToScreen(f"{_aname} : {msg}")
+            _TTS(msg)
+        except Exception:
+            print(f"[AskAI] {msg}")
+
+    result = ask_ai_website(
+        query,
+        preferred_ai=preferred_ai,
+        on_status=_say_and_show
+    )
+
+    if result.get("response"):
+        full_resp   = result["response"]
+        speech_resp = result["speech_text"]
+        ai_used     = result["ai_used"]
+
+        # Screen pe full response dikhao (pehle 400 chars + indicator)
+        preview = full_resp[:400] + ("..." if len(full_resp) > 400 else "")
+        try:
+            ShowTextToScreen(f"{_aname} [{ai_used}]: {preview}")
+        except Exception:
+            pass
+
+        # TTS ke liye truncated version bolo
+        _say_and_show(speech_resp)
+        return True
+
+    else:
+        err = result.get("error", "Sabhi AI websites fail ho gayi.")
+        _say_and_show(err)
+        return False        
 
 # ── Google Search ─────────────────────────────────────────────
 def GoogleSearch(topic: str) -> bool:
@@ -571,6 +633,21 @@ async def TranslateAndExecute(commands: list):
 
         elif cmd.startswith("google search"):
             funcs.append(asyncio.to_thread(GoogleSearch, command.strip()[13:].strip()))
+
+        elif cmd.startswith("aicode"):
+            # "aicode write bubble sort in python"
+            q = command.strip()[6:].strip()
+            funcs.append(asyncio.to_thread(AskAIWebsite, q, "claude"))
+
+        elif cmd.startswith("aicontent"):
+            # "aicontent write a blog about AI"
+            q = command.strip()[9:].strip()
+            funcs.append(asyncio.to_thread(AskAIWebsite, q, "chatgpt"))
+
+        elif cmd.startswith("askai"):
+            # "askai what is quantum computing"  (auto-route)
+            q = command.strip()[5:].strip()
+            funcs.append(asyncio.to_thread(AskAIWebsite, q, None))    
 
         elif cmd.startswith("youtube search"):
             funcs.append(asyncio.to_thread(YouTubeSearch, command.strip()[14:].strip()))

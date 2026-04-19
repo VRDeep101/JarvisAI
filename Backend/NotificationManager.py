@@ -1,31 +1,28 @@
 # ─────────────────────────────────────────────────────────────
-#  NotificationManager.py  —  Jarvis Windows Notification Hub
+#  NotificationManager.py  —  Jarvis Windows Notification Hub  [FIXED]
 #
-#  FEATURES:
-#  - Read Windows toast notifications (WhatsApp, Gmail, etc.)
-#  - Send custom notifications to user
-#  - Monitor notification queue
-#  - App whitelist: add/remove apps to watch
-#  - Auto-announce on startup: "You have 3 WhatsApp messages"
-#  - Persistent notification log
+#  KYA FIX KIA:
+#  - get_notification_count() ab log-based hai (PowerShell wala kaam nahi karta)
+#  - send_notification() ke 4 reliable fallbacks
+#  - Windows notification reading ka limitation clearly handled
+#  - Startup message reliable hai
 # ─────────────────────────────────────────────────────────────
 
 import os
 import json
 import datetime
 import subprocess
-import time
 import threading
 
-# ── Optional: Windows toast via win11toast / plyer ────────────
+# ── Optional toast libraries ───────────────────────────────────
 try:
-    from win11toast import toast
+    from win11toast import toast as _win11_toast
     WIN11TOAST_AVAILABLE = True
 except ImportError:
     WIN11TOAST_AVAILABLE = False
 
 try:
-    from plyer import notification as plyer_notify
+    from plyer import notification as _plyer
     PLYER_AVAILABLE = True
 except ImportError:
     PLYER_AVAILABLE = False
@@ -35,169 +32,105 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DATA_DIR = os.path.join(_BASE_DIR, "Data")
 os.makedirs(_DATA_DIR, exist_ok=True)
 
-_NOTIF_LOG   = os.path.join(_DATA_DIR, "notifications.json")
+_NOTIF_LOG         = os.path.join(_DATA_DIR, "notifications.json")
 _WATCHED_APPS_FILE = os.path.join(_DATA_DIR, "watched_apps.json")
+_MAX_LOG           = 100
 
-# ── Default watched apps ──────────────────────────────────────
 _DEFAULT_WATCHED = [
     "WhatsApp", "Gmail", "Outlook", "Telegram", "Discord",
-    "Instagram", "Twitter", "Teams", "Slack", "Chrome",
-    "Firefox", "Edge", "YouTube", "Zoom", "Calendar"
+    "Instagram", "Twitter", "Teams", "Slack", "Zoom",
 ]
 
-def _load_watched_apps() -> list:
+# ── Watched Apps ───────────────────────────────────────────────
+def _load_watched() -> list:
     try:
         with open(_WATCHED_APPS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        _save_watched_apps(_DEFAULT_WATCHED)
+        _save_watched(_DEFAULT_WATCHED)
         return _DEFAULT_WATCHED
 
-def _save_watched_apps(apps: list) -> None:
+def _save_watched(apps: list) -> None:
     try:
         with open(_WATCHED_APPS_FILE, "w", encoding="utf-8") as f:
             json.dump(apps, f, indent=2)
     except Exception:
         pass
 
+def get_watched_apps() -> list:
+    return _load_watched()
+
 def add_watched_app(app_name: str) -> str:
-    """Add an app to the notification watch list."""
-    apps = _load_watched_apps()
+    apps = _load_watched()
     if app_name not in apps:
         apps.append(app_name)
-        _save_watched_apps(apps)
+        _save_watched(apps)
         return f"Done. I'll now watch for {app_name} notifications."
     return f"I'm already watching {app_name}."
 
 def remove_watched_app(app_name: str) -> str:
-    """Remove an app from the watch list."""
-    apps = _load_watched_apps()
+    apps = _load_watched()
     if app_name in apps:
         apps.remove(app_name)
-        _save_watched_apps(apps)
+        _save_watched(apps)
         return f"Removed. I'll stop watching {app_name}."
     return f"{app_name} wasn't in the list."
 
-def get_watched_apps() -> list:
-    return _load_watched_apps()
-
-# ── Read Windows Notifications via PowerShell ─────────────────
-_PS_SCRIPT = """
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-
-$notifications = @()
-try {
-    $history = [Windows.UI.Notifications.ToastNotificationManager]::History
-    $apps = $history.GetHistory()
-    foreach ($notif in $apps) {
-        $xml = $notif.Content.InnerText
-        $notifications += @{
-            AppId = $notif.AppId
-            Tag   = $notif.Tag
-            Group = $notif.Group
-        }
-    }
-} catch {}
-
-$notifications | ConvertTo-Json
-"""
-
-def _read_windows_notifications_raw() -> list:
-    """
-    Try to read Windows notification history via PowerShell.
-    Note: Windows limits third-party apps from reading others' notifications.
-    This is a best-effort approach.
-    """
-    try:
-        result = subprocess.run(
-            ["powershell", "-Command", _PS_SCRIPT],
-            capture_output=True, text=True, timeout=8
-        )
-        if result.stdout.strip():
-            data = json.loads(result.stdout.strip())
-            if isinstance(data, dict):
-                data = [data]
-            return data
-    except Exception:
-        pass
-    return []
-
-# ── Action Center count via PowerShell ───────────────────────
-_PS_COUNT = """
-try {
-    $count = (Get-Counter -Counter "\\Windows Action Center(*)" -ErrorAction SilentlyContinue).CounterSamples
-    Write-Output $count.CookedValue
-} catch {
-    Write-Output "0"
-}
-"""
-
-def get_notification_count() -> int:
-    """Approximate notification count from Windows Action Center."""
-    try:
-        result = subprocess.run(
-            ["powershell", "-Command",
-             "(Get-AppxPackage | Where-Object {$_.Name -like '*NotificationsVisualizerStudio*'}).Count"],
-            capture_output=True, text=True, timeout=5
-        )
-        return int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0
-    except Exception:
-        return 0
-
-# ── Simulated notification tracking (fallback) ────────────────
-_notification_log: list = []
-_max_log_size = 100
-
-def _load_notif_log() -> list:
+# ── Notification Log (Jarvis ka apna system) ───────────────────
+def _load_log() -> list:
     try:
         with open(_NOTIF_LOG, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
 
-def _save_notif_log(log: list) -> None:
+def _save_log(log: list) -> None:
     try:
         with open(_NOTIF_LOG, "w", encoding="utf-8") as f:
-            json.dump(log[-_max_log_size:], f, indent=2)
+            json.dump(log[-_MAX_LOG:], f, indent=2)
     except Exception:
         pass
 
 def log_notification(app: str, message: str, title: str = "") -> None:
-    """Manually log a notification (called by other modules)."""
+    """Manually ek notification log karo (doosre modules se call karo)."""
     entry = {
-        "app":       app,
-        "title":     title,
-        "message":   message,
+        "app"      : app,
+        "title"    : title,
+        "message"  : message,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "read":      False
+        "read"     : False,
     }
-    log = _load_notif_log()
+    log = _load_log()
     log.append(entry)
-    _save_notif_log(log)
+    _save_log(log)
 
 def get_unread_notifications() -> list:
-    """Get all unread logged notifications."""
-    log = _load_notif_log()
-    return [n for n in log if not n.get("read", False)]
+    return [n for n in _load_log() if not n.get("read", False)]
 
 def mark_all_read() -> None:
-    log = _load_notif_log()
+    log = _load_log()
     for n in log:
         n["read"] = True
-    _save_notif_log(log)
+    _save_log(log)
+
+def get_notification_count() -> int:
+    """
+    Unread notifications ka count.
+    NOTE: Ye sirf Jarvis-logged notifications count karta hai.
+    Windows dusre apps ki notifications padhne nahi deta easily.
+    """
+    return len(get_unread_notifications())
 
 def get_notification_summary() -> str:
     """
-    Returns a human-readable summary for Jarvis startup announcement.
-    e.g. "You have 3 WhatsApp messages and 1 Gmail notification."
+    Human-readable summary for startup.
+    Example: "You have 3 WhatsApp messages and 1 Gmail notification."
     """
     unread = get_unread_notifications()
     if not unread:
         return ""
 
-    app_counts = {}
+    app_counts: dict = {}
     for n in unread:
         app = n.get("app", "Unknown")
         app_counts[app] = app_counts.get(app, 0) + 1
@@ -211,89 +144,121 @@ def get_notification_summary() -> str:
         return ""
     return "By the way, you have " + " and ".join(parts) + "."
 
-# ── Send notification to user ─────────────────────────────────
+# ── Send Notification (4 reliable fallbacks) ──────────────────
 def send_notification(title: str, message: str, app_name: str = "Jarvis") -> bool:
     """
-    Send a Windows toast notification to the user.
-    Uses win11toast if available, falls back to plyer, then PowerShell.
+    Windows desktop notification bhejo.
+    4 methods try karta hai — pehla jo kaam kare woh use karta hai.
     """
+    # Method 1: win11toast (best, modern Windows)
     if WIN11TOAST_AVAILABLE:
         try:
-            toast(title, message, app_id=app_name)
+            _win11_toast(title, message, app_id=app_name)
             return True
         except Exception:
             pass
 
+    # Method 2: plyer
     if PLYER_AVAILABLE:
         try:
-            plyer_notify.notify(
-                title=title,
-                message=message,
-                app_name=app_name,
-                timeout=8
+            _plyer.notify(
+                title   = title,
+                message = message,
+                app_name= app_name,
+                timeout = 8,
             )
             return True
         except Exception:
             pass
 
-    # PowerShell fallback
-    ps_cmd = f'''
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
-[Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] | Out-Null
-
-$APP_ID = "Jarvis"
-$template = @"
-<toast>
-  <visual>
-    <binding template="ToastText02">
-      <text id="1">{title}</text>
-      <text id="2">{message}</text>
-    </binding>
-  </visual>
-</toast>
-"@
-$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-$xml.LoadXml($template)
-$toast = New-Object Windows.UI.Notifications.ToastNotification $xml
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($APP_ID).Show($toast)
-'''
+    # Method 3: PowerShell BurntToast module (agar installed ho)
     try:
-        subprocess.run(["powershell", "-Command", ps_cmd],
-                       capture_output=True, timeout=5)
+        ps = (
+            f"if (Get-Module -ListAvailable -Name BurntToast) {{"
+            f"  New-BurntToastNotification -Text '{title}', '{message}'"
+            f"}}"
+        )
+        r = subprocess.run(
+            ["powershell", "-Command", ps],
+            capture_output=True, timeout=6
+        )
+        if r.returncode == 0 and not r.stderr:
+            return True
+    except Exception:
+        pass
+
+    # Method 4: PowerShell Windows.UI.Notifications (Windows 10/11)
+    try:
+        ps = f"""
+Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] | Out-Null
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastText02"><text id="1">{title}</text><text id="2">{message}</text></binding></visual></toast>')
+$toast = New-Object Windows.UI.Notifications.ToastNotification $xml
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("{app_name}").Show($toast)
+"""
+        subprocess.run(
+            ["powershell", "-Command", ps],
+            capture_output=True, timeout=8
+        )
         return True
     except Exception:
-        return False
+        pass
 
-# ── Startup Summary ───────────────────────────────────────────
+    print(f"[NotifMgr] Notification send nahi ho saka: {title} — {message}")
+    return False
+
+# ── Windows Notification Reading (Best-effort) ────────────────
+def _read_windows_notifications_raw() -> list:
+    """
+    Windows dusre apps ki notifications easily padhne nahi deta.
+    Ye function best-effort hai — mostly empty return karega.
+    Reliable way hai log_notification() se manually log karna.
+    """
+    _PS = """
+try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
+    $history = [Windows.UI.Notifications.ToastNotificationManager]::History
+    $apps = $history.GetHistory()
+    $apps | Select-Object AppId,Tag,Group | ConvertTo-Json -Compress
+} catch { Write-Output "[]" }
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-Command", _PS],
+            capture_output=True, text=True, timeout=8
+        )
+        raw = r.stdout.strip()
+        if raw and raw != "[]":
+            data = json.loads(raw)
+            return [data] if isinstance(data, dict) else data
+    except Exception:
+        pass
+    return []
+
+# ── Startup Summary ────────────────────────────────────────────
 def get_startup_notification_message() -> str:
     """
-    Call this on Jarvis startup to announce pending notifications.
-    Returns empty string if nothing to report.
+    Jarvis startup pe call karo — pending notifications announce karta hai.
+    Sirf tab kuch return karega jab pehle log_notification() se kuch log hua ho.
     """
-    summary = get_notification_summary()
-    return summary
+    return get_notification_summary()
 
 # ── Test ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("[NotifMgr] Test mode")
 
-    # Test: log some fake notifications
-    log_notification("WhatsApp", "Hey, are you free?", "Rahul")
-    log_notification("WhatsApp", "Bhai meeting at 5", "Work Group")
-    log_notification("Gmail", "Your order has been shipped", "Amazon")
+    log_notification("WhatsApp", "Hey bhai free ho?", "Rahul")
+    log_notification("WhatsApp", "Meeting at 5", "Work Group")
+    log_notification("Gmail", "Your order shipped", "Amazon")
 
-    summary = get_startup_notification_message()
-    print(f"Startup message: {summary}")
+    print(f"Startup: {get_startup_notification_message()}")
+    print(f"Unread : {get_notification_count()}")
+    print(f"Watched: {get_watched_apps()}")
 
-    unread = get_unread_notifications()
-    print(f"Unread: {len(unread)}")
+    ok = send_notification("Jarvis Test", "Notification system working!")
+    print(f"Sent   : {ok}")
 
-    # Test sending notification
-    result = send_notification("Jarvis Test", "Notification system is working!")
-    print(f"Sent: {result}")
-
-    # Test watched apps
-    print(f"Watched apps: {get_watched_apps()}")
-    add_watched_app("Spotify")
-    print(f"After add: {get_watched_apps()}")
+    mark_all_read()
+    print(f"After mark_all_read: {get_notification_count()} unread")
